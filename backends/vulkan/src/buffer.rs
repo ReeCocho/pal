@@ -1,4 +1,4 @@
-use std::mem::ManuallyDrop;
+use std::{mem::ManuallyDrop, sync::Arc};
 
 use api::{
     buffer::{BufferCreateError, BufferCreateInfo},
@@ -20,8 +20,12 @@ pub struct Buffer {
     pub(crate) size: u64,
     /// This is the per element size after alignment.
     pub(crate) aligned_size: u64,
+    pub(crate) ref_counter: BufferRefCounter,
     on_drop: Sender<Garbage>,
 }
+
+#[derive(Clone)]
+pub(crate) struct BufferRefCounter(Arc<()>);
 
 impl Buffer {
     pub(crate) unsafe fn new(
@@ -101,6 +105,7 @@ impl Buffer {
             buffer_usage: create_info.buffer_usage,
             memory_usage: create_info.memory_usage,
             on_drop,
+            ref_counter: BufferRefCounter::default(),
         })
     }
 }
@@ -111,7 +116,22 @@ impl Drop for Buffer {
             .send(Garbage::Buffer {
                 buffer: self.buffer,
                 allocation: unsafe { ManuallyDrop::take(&mut self.block) },
+                ref_counter: self.ref_counter.clone(),
             })
             .unwrap();
+    }
+}
+
+impl BufferRefCounter {
+    #[inline]
+    pub fn is_last(&self) -> bool {
+        Arc::strong_count(&self.0) == 1
+    }
+}
+
+impl Default for BufferRefCounter {
+    #[inline]
+    fn default() -> Self {
+        BufferRefCounter(Arc::new(()))
     }
 }

@@ -1,8 +1,12 @@
-use std::{mem::ManuallyDrop, sync::Mutex};
+use std::sync::Mutex;
 
 use ash::vk;
 use crossbeam_channel::{Receiver, Sender};
 use gpu_allocator::vulkan::{Allocation, Allocator};
+
+use crate::buffer::BufferRefCounter;
+
+use super::descriptor_pool::DescriptorPools;
 
 pub(crate) struct GarbageCollector {
     sender: Sender<Garbage>,
@@ -15,6 +19,11 @@ pub(crate) enum Garbage {
     Buffer {
         buffer: vk::Buffer,
         allocation: Allocation,
+        ref_counter: BufferRefCounter,
+    },
+    DescriptorSet {
+        set: vk::DescriptorSet,
+        layout: vk::DescriptorSetLayout,
     },
 }
 
@@ -48,6 +57,7 @@ impl GarbageCollector {
         &self,
         device: &ash::Device,
         allocator: &mut Allocator,
+        pools: &mut DescriptorPools,
         current: TimelineValues,
         target: TimelineValues,
     ) {
@@ -63,6 +73,15 @@ impl GarbageCollector {
         // Mark everything that is not being used by any queue
         let mut marked = Vec::default();
         for (i, garbage) in to_destroy.iter().enumerate() {
+            match &garbage.garbage {
+                Garbage::Buffer { ref_counter, .. } => {
+                    if !ref_counter.is_last() {
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+
             if garbage.values.main <= current.main
                 && garbage.values.transfer <= current.transfer
                 && garbage.values.compute <= current.compute
@@ -81,9 +100,14 @@ impl GarbageCollector {
                         device.destroy_pipeline(pipeline, None);
                     }
                 }
-                Garbage::Buffer { buffer, allocation } => {
+                Garbage::Buffer {
+                    buffer, allocation, ..
+                } => {
                     device.destroy_buffer(buffer, None);
                     allocator.free(allocation).unwrap();
+                }
+                Garbage::DescriptorSet { set, layout } => {
+                    pools.get_by_layout(layout).unwrap().free(set);
                 }
             }
         }

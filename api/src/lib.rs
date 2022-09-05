@@ -16,7 +16,7 @@ use buffer::{BufferCreateError, BufferCreateInfo, BufferViewError};
 use command_buffer::Command;
 use descriptor_set::{
     DescriptorSetCreateError, DescriptorSetCreateInfo, DescriptorSetLayoutCreateError,
-    DescriptorSetLayoutCreateInfo,
+    DescriptorSetLayoutCreateInfo, DescriptorSetUpdate,
 };
 use graphics_pipeline::{GraphicsPipelineCreateError, GraphicsPipelineCreateInfo};
 use queue::SurfacePresentFailure;
@@ -86,7 +86,7 @@ pub trait Backend: Sized + 'static {
     ) -> Result<Self::DescriptorSet, DescriptorSetCreateError>;
     unsafe fn create_descriptor_set_layout(
         &self,
-        create_info: DescriptorSetLayoutCreateInfo<Self>,
+        create_info: DescriptorSetLayoutCreateInfo,
     ) -> Result<Self::DescriptorSetLayout, DescriptorSetLayoutCreateError>;
     unsafe fn destroy_buffer(&self, id: &mut Self::Buffer);
     unsafe fn destroy_texture(&self, id: &mut Self::Texture);
@@ -104,5 +104,10 @@ pub trait Backend: Sized + 'static {
     unsafe fn flush_range(&self, id: &mut Self::Buffer, idx: usize);
     unsafe fn invalidate_range(&self, id: &mut Self::Buffer, idx: usize);
 
-    unsafe fn update_descriptor_sets(&self);
+    unsafe fn update_descriptor_sets(
+        &self,
+        id: &mut Self::DescriptorSet,
+        layout: &Self::DescriptorSetLayout,
+        updates: &[DescriptorSetUpdate<Self>],
+    );
 }

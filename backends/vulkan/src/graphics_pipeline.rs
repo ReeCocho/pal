@@ -7,7 +7,7 @@ use crate::util::garbage_collector::Garbage;
 
 pub struct GraphicsPipeline {
     descriptor: GraphicsPipelineCreateInfo<crate::VulkanBackend>,
-    layout: vk::PipelineLayout,
+    pub(crate) layout: vk::PipelineLayout,
     garbage: Sender<Garbage>,
     /// Maps render passes to the appropriate pipeline.
     pipelines: Mutex<HashMap<vk::RenderPass, vk::Pipeline>>,
@@ -20,7 +20,13 @@ impl GraphicsPipeline {
         descriptor: GraphicsPipelineCreateInfo<crate::VulkanBackend>,
     ) -> Self {
         // Create the layout
-        let layout_create_info = vk::PipelineLayoutCreateInfo::builder().build();
+        let mut layouts = Vec::with_capacity(descriptor.layouts.len());
+        for layout in &descriptor.layouts {
+            layouts.push(layout.internal().layout);
+        }
+        let layout_create_info = vk::PipelineLayoutCreateInfo::builder()
+            .set_layouts(&layouts)
+            .build();
         let layout = device
             .create_pipeline_layout(&layout_create_info, None)
             .unwrap();

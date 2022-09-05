@@ -168,6 +168,7 @@ pub enum PresentMode {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ShaderStage {
+    AllGraphics,
     Vertex,
     Fragment,
     Compute,
@@ -191,4 +192,10 @@ pub enum MemoryUsage {
     GpuOnly,
     CpuToGpu,
     GpuToCpu,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum AccessType {
+    Read,
+    ReadWrite,
 }

@@ -37,4 +37,13 @@ pub mod prelude {
     pub use api::buffer::{
         BufferCreateError, BufferCreateInfo, BufferReadView, BufferViewError, BufferWriteView,
     };
+
+    // Descriptor set & layout
+    pub type DescriptorSetLayout = api::descriptor_set::DescriptorSetLayout<crate::Backend>;
+    pub type DescriptorSet = api::descriptor_set::DescriptorSet<crate::Backend>;
+    pub use api::descriptor_set::{
+        DescriptorBinding, DescriptorSetCreateError, DescriptorSetCreateInfo,
+        DescriptorSetLayoutCreateError, DescriptorSetLayoutCreateInfo, DescriptorSetUpdate,
+        DescriptorType, DescriptorValue,
+    };
 }

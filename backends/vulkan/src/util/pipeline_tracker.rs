@@ -87,6 +87,35 @@ impl PipelineTracker {
             }
         }
 
+        for (image, usage) in images {
+            match self.images.get_mut(&image) {
+                Some(old_usage) => {
+                    // Read-after-read needs no barrier. Everything else does, however.
+                    if !(read_accesses.contains(old_usage.access)
+                        && read_accesses.contains(usage.access))
+                    {
+                        needs_barrier = true;
+                        barrier.src_stage |= old_usage.used;
+                        barrier.dst_stage |= usage.used;
+
+                        // We only need a memory barrier for read-after-write and write-after-write
+                        if !read_accesses.contains(old_usage.access) {
+                            let dst_access = memory_barriers.entry(old_usage.access).or_default();
+                            *dst_access |= usage.access;
+                        }
+
+                        *old_usage = *usage;
+                    } else {
+                        old_usage.used |= usage.used;
+                        old_usage.access |= usage.access;
+                    }
+                }
+                None => {
+                    self.images.insert(*image, *usage);
+                }
+            }
+        }
+
         if needs_barrier {
             barrier.memory_barriers = memory_barriers
                 .into_iter()

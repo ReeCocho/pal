@@ -1,6 +1,7 @@
 use api::{
     command_buffer::CopyBufferToBuffer, render_pass::VertexBind, surface::SurfacePresentSuccess,
 };
+use bytemuck::{Pod, Zeroable};
 use pal::prelude::*;
 use vulkan::{VulkanBackend, VulkanBackendCreateInfo};
 use winit::{
@@ -10,16 +11,25 @@ use winit::{
     window::WindowBuilder,
 };
 
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct UniformData {
+    offset: [f32; 2],
+}
+
+unsafe impl Zeroable for UniformData {}
+unsafe impl Pod for UniformData {}
+
 fn main() {
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
-        .with_title("Triangle")
+        .with_title("Uniform Buffer")
         .with_inner_size(PhysicalSize::new(1270, 720))
         .build(&event_loop)
         .unwrap();
 
     let backend = VulkanBackend::new(VulkanBackendCreateInfo {
-        app_name: String::from("Triangle"),
+        app_name: String::from("Uniform Buffer"),
         engine_name: String::from("pal"),
         window: &window,
         debug: true,
@@ -45,9 +55,9 @@ fn main() {
     // Create vertex buffer
     const VERTICES: &'static [f32] = &[
         // First
-        -1.0, -1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, // Second
-        1.0, -1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, // Third
-        0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0,
+        -0.5, -0.5, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, // Second
+        0.5, -0.5, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, // Third
+        0.0, 0.5, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0,
     ];
     let vertex_staging =
         Buffer::new_staging(context.clone(), bytemuck::cast_slice(&VERTICES)).unwrap();
@@ -103,11 +113,56 @@ fn main() {
     std::mem::drop(vertex_staging);
     std::mem::drop(index_staging);
 
+    // Create uniform buffer
+    let mut uniform_buffer = Buffer::new(
+        context.clone(),
+        BufferCreateInfo {
+            size: std::mem::size_of::<UniformData>() as u64,
+            array_elements: 1,
+            buffer_usage: BufferUsage::UNIFORM_BUFFER,
+            memory_usage: MemoryUsage::CpuToGpu,
+        },
+    )
+    .unwrap();
+
+    // Create descriptor set layout for our pipeline
+    let layout = DescriptorSetLayout::new(
+        context.clone(),
+        DescriptorSetLayoutCreateInfo {
+            bindings: vec![DescriptorBinding {
+                binding: 0,
+                ty: DescriptorType::UniformBuffer,
+                count: 1,
+                stage: ShaderStage::Vertex,
+            }],
+        },
+    )
+    .unwrap();
+
+    // Create the descriptor set
+    let mut set = DescriptorSet::new(
+        context.clone(),
+        DescriptorSetCreateInfo {
+            layout: layout.clone(),
+        },
+    )
+    .unwrap();
+
+    // Bind the uniform buffer to the set
+    set.update(&[DescriptorSetUpdate {
+        binding: 0,
+        array_element: 0,
+        value: DescriptorValue::UniformBuffer {
+            buffer: &uniform_buffer,
+            array_element: 0,
+        },
+    }]);
+
     // Compile our shader modules
     let vertex_shader = Shader::new(
         context.clone(),
         ShaderCreateInfo {
-            code: include_bytes!("./shaders/triangle.vert.spv"),
+            code: include_bytes!("./shaders/uniform_buffer.vert.spv"),
         },
     )
     .unwrap();
@@ -128,7 +183,7 @@ fn main() {
                 vertex: vertex_shader,
                 fragment: Some(fragment_shader),
             },
-            layouts: Vec::default(),
+            layouts: vec![layout.clone()],
             vertex_input: VertexInputState {
                 attributes: vec![
                     // This attribute describes the position of our vertex
@@ -168,9 +223,17 @@ fn main() {
     )
     .unwrap();
 
+    let mut timer: f32 = 0.0;
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
-        let _ = (&pipeline, &index_buffer, &vertex_buffer, &context, &surface);
+        let _ = (
+            &pipeline,
+            &index_buffer,
+            &vertex_buffer,
+            &uniform_buffer,
+            &context,
+            &surface,
+        );
 
         match event {
             Event::WindowEvent {
@@ -182,6 +245,16 @@ fn main() {
                 if window_id != window.id() || window_size.width == 0 || window_size.height == 0 {
                     return;
                 }
+
+                // Update the UBO
+                timer += 0.01;
+                uniform_buffer
+                    .write(0)
+                    .unwrap()
+                    .as_slice_mut()
+                    .copy_from_slice(bytemuck::cast_slice(&[UniformData {
+                        offset: [timer.cos() * 0.1, timer.sin() * 0.1],
+                    }]));
 
                 let surface_image = surface.acquire_image().unwrap();
 
@@ -197,6 +270,9 @@ fn main() {
                         |pass| {
                             // Bind our graphics pipeline
                             pass.bind_pipeline(pipeline.clone());
+
+                            // Bind our descriptor set
+                            pass.bind_sets(0, vec![&set]);
 
                             // Bind vertex and index buffers
                             pass.bind_vertex_buffers(

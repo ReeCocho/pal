@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use crate::{context::Context, shader::Shader, types::*, Backend};
+use crate::{
+    context::Context, descriptor_set::DescriptorSetLayout, shader::Shader, types::*, Backend,
+};
 use thiserror::Error;
 
 #[derive(Clone)]
@@ -68,6 +70,7 @@ pub struct ColorBlendState {
 #[derive(Clone)]
 pub struct GraphicsPipelineCreateInfo<B: Backend> {
     pub stages: ShaderStages<B>,
+    pub layouts: Vec<DescriptorSetLayout<B>>,
     pub vertex_input: VertexInputState,
     pub rasterization: RasterizationState,
     pub depth_stencil: Option<DepthStencilState>,

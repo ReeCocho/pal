@@ -3,7 +3,7 @@ use api::{
     command_buffer::Command,
     descriptor_set::{
         DescriptorSetCreateError, DescriptorSetCreateInfo, DescriptorSetLayoutCreateError,
-        DescriptorSetLayoutCreateInfo,
+        DescriptorSetLayoutCreateInfo, DescriptorSetUpdate, DescriptorType, DescriptorValue,
     },
     graphics_pipeline::{GraphicsPipelineCreateError, GraphicsPipelineCreateInfo},
     queue::SurfacePresentFailure,
@@ -19,6 +19,7 @@ use api::{
 use ash::vk::{self, DebugUtilsMessageSeverityFlagsEXT};
 use buffer::Buffer;
 use crossbeam_utils::sync::ShardedLock;
+use descriptor_set::{Binding, BoundValue, DescriptorSet, DescriptorSetLayout};
 use gpu_allocator::vulkan::*;
 use graphics_pipeline::GraphicsPipeline;
 use queue::VkQueue;
@@ -27,7 +28,6 @@ use render_pass::{FramebufferCache, RenderPassCache};
 use shader::Shader;
 use std::{
     borrow::Cow,
-    collections::HashSet,
     ffi::{CStr, CString},
     mem::ManuallyDrop,
     ptr::NonNull,
@@ -36,6 +36,7 @@ use std::{
 use surface::{Surface, SurfaceImage};
 use thiserror::Error;
 use util::{
+    descriptor_pool::DescriptorPools,
     garbage_collector::{GarbageCollector, TimelineValues},
     pipeline_tracker::PipelineTracker,
     resource_state::{LatestUsage, ResourceState},
@@ -46,6 +47,7 @@ use crate::util::pipeline_tracker::ResourceUsage;
 
 pub mod buffer;
 pub mod command_buffer;
+pub mod descriptor_set;
 pub mod graphics_pipeline;
 pub mod queue;
 pub mod render_pass;
@@ -92,6 +94,7 @@ pub struct VulkanBackend {
     pub(crate) framebuffers: FramebufferCache,
     pub(crate) garbage: GarbageCollector,
     pub(crate) resource_state: ShardedLock<ResourceState>,
+    pub(crate) pools: Mutex<DescriptorPools>,
 }
 
 #[derive(Default)]
@@ -123,8 +126,8 @@ impl Backend for VulkanBackend {
     type SurfaceImage = SurfaceImage;
     type Shader = Shader;
     type GraphicsPipeline = GraphicsPipeline;
-    type DescriptorSetLayout = ();
-    type DescriptorSet = ();
+    type DescriptorSetLayout = DescriptorSetLayout;
+    type DescriptorSet = DescriptorSet;
     type Job = ();
 
     unsafe fn create_surface<'a, W: HasRawWindowHandle>(
@@ -240,6 +243,7 @@ impl Backend for VulkanBackend {
         // Lock down all neccesary objects
         let mut resc_state = self.resource_state.write().unwrap();
         let mut allocator = self.allocator.lock().unwrap();
+        let mut pools = self.pools.lock().unwrap();
         let mut main = self.main.write().unwrap();
         let mut transfer = self.transfer.write().unwrap();
         let mut compute = self.compute.write().unwrap();
@@ -256,12 +260,18 @@ impl Backend for VulkanBackend {
             transfer: transfer.target_timeline_value(),
             compute: compute.target_timeline_value(),
         };
-        self.garbage
-            .cleanup(&self.device, &mut allocator, current_values, target_values);
+        self.garbage.cleanup(
+            &self.device,
+            &mut allocator,
+            &mut pools,
+            current_values,
+            target_values,
+        );
 
         // State
         let mut semaphore_tracker = SemaphoreTracker::default();
         let mut active_render_pass = vk::RenderPass::null();
+        let mut active_layout = vk::PipelineLayout::null();
         let mut pipeline_tracker = PipelineTracker::default();
         let next_target_value = match queue {
             QueueType::Main => &main,
@@ -396,9 +406,25 @@ impl Backend for VulkanBackend {
                 }
                 Command::EndRenderPass => self.device.cmd_end_render_pass(cb),
                 Command::BindGraphicsPipeline(pipeline) => {
+                    active_layout = pipeline.internal().layout;
                     let pipeline = pipeline.internal().get(&self.device, active_render_pass);
                     self.device
                         .cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
+                }
+                Command::BindDescriptorSets { sets, first } => {
+                    let mut vk_sets = Vec::with_capacity(sets.len());
+                    for set in sets {
+                        vk_sets.push(set.internal().set);
+                    }
+
+                    self.device.cmd_bind_descriptor_sets(
+                        cb,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        active_layout,
+                        *first as u32,
+                        &vk_sets,
+                        &[],
+                    );
                 }
                 Command::BindVertexBuffers { first, binds } => {
                     let mut buffers = Vec::with_capacity(binds.len());
@@ -648,14 +674,38 @@ impl Backend for VulkanBackend {
         &self,
         create_info: DescriptorSetCreateInfo<Self>,
     ) -> Result<Self::DescriptorSet, DescriptorSetCreateError> {
-        todo!()
+        let mut bound = Vec::with_capacity(create_info.layout.internal().descriptor.bindings.len());
+        for binding in &create_info.layout.internal().descriptor.bindings {
+            let mut binds = Vec::with_capacity(binding.count);
+            binds.resize_with(binding.count, || None);
+            bound.push(binds);
+        }
+
+        let mut pools = self.pools.lock().unwrap();
+        let pool = pools.get(
+            &self.device,
+            create_info.layout.internal().descriptor.clone(),
+        );
+        let set = pool.allocate(&self.device);
+        Ok(DescriptorSet {
+            set,
+            layout: pool.layout(),
+            on_drop: self.garbage.sender(),
+            bound,
+        })
     }
 
     unsafe fn create_descriptor_set_layout(
         &self,
-        create_info: DescriptorSetLayoutCreateInfo<Self>,
+        create_info: DescriptorSetLayoutCreateInfo,
     ) -> Result<Self::DescriptorSetLayout, DescriptorSetLayoutCreateError> {
-        todo!()
+        // Pre-cache the pool
+        let mut pools = self.pools.lock().unwrap();
+        let pool = pools.get(&self.device, create_info.clone());
+        Ok(DescriptorSetLayout {
+            descriptor: create_info,
+            layout: pool.layout(),
+        })
     }
 
     unsafe fn destroy_buffer(&self, _buffer: &mut Self::Buffer) {
@@ -674,12 +724,12 @@ impl Backend for VulkanBackend {
         // Handled in drop
     }
 
-    unsafe fn destroy_descriptor_set(&self, id: &mut Self::DescriptorSet) {
-        todo!()
+    unsafe fn destroy_descriptor_set(&self, _id: &mut Self::DescriptorSet) {
+        // Handled in drop
     }
 
-    unsafe fn destroy_descriptor_set_layout(&self, id: &mut Self::DescriptorSetLayout) {
-        todo!()
+    unsafe fn destroy_descriptor_set_layout(&self, _id: &mut Self::DescriptorSetLayout) {
+        // Not needed
     }
 
     unsafe fn map_memory(
@@ -739,8 +789,108 @@ impl Backend for VulkanBackend {
         // Not needed because HOST_COHERENT
     }
 
-    unsafe fn update_descriptor_sets(&self) {
-        todo!()
+    unsafe fn update_descriptor_sets(
+        &self,
+        set: &mut Self::DescriptorSet,
+        layout: &Self::DescriptorSetLayout,
+        updates: &[DescriptorSetUpdate<Self>],
+    ) {
+        let mut writes = Vec::with_capacity(updates.len());
+        let mut buffers = Vec::with_capacity(updates.len());
+
+        for update in updates {
+            set.bound[update.binding as usize][update.array_element] = Some({
+                let binding = layout.get_binding(update.binding).unwrap();
+                let access = match binding.ty {
+                    DescriptorType::Texture => vk::AccessFlags::SHADER_READ,
+                    DescriptorType::UniformBuffer => vk::AccessFlags::UNIFORM_READ,
+                    DescriptorType::StorageBuffer(ty) => match ty {
+                        AccessType::Read => vk::AccessFlags::SHADER_READ,
+                        AccessType::ReadWrite => {
+                            vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE
+                        }
+                    },
+                };
+                let stage = match binding.stage {
+                    ShaderStage::Vertex => vk::PipelineStageFlags::VERTEX_SHADER,
+                    ShaderStage::Fragment => vk::PipelineStageFlags::FRAGMENT_SHADER,
+                    ShaderStage::Compute => vk::PipelineStageFlags::COMPUTE_SHADER,
+                    ShaderStage::AllGraphics => vk::PipelineStageFlags::ALL_GRAPHICS,
+                };
+
+                match &update.value {
+                    DescriptorValue::UniformBuffer {
+                        buffer,
+                        array_element,
+                    } => {
+                        let buffer = buffer.internal();
+                        buffers.push(
+                            vk::DescriptorBufferInfo::builder()
+                                .buffer(buffer.buffer)
+                                .offset(buffer.aligned_size * (*array_element) as u64)
+                                .range(buffer.aligned_size)
+                                .build(),
+                        );
+
+                        writes.push(
+                            vk::WriteDescriptorSet::builder()
+                                .dst_set(set.set)
+                                .dst_binding(update.binding)
+                                .dst_array_element(update.array_element as u32)
+                                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                                .buffer_info(&buffers[buffers.len() - 1..])
+                                .build(),
+                        );
+
+                        Binding {
+                            access,
+                            stage,
+                            value: BoundValue::UniformBuffer {
+                                ref_counter: buffer.ref_counter.clone(),
+                                buffer: buffer.buffer,
+                                array_element: *array_element,
+                            },
+                        }
+                    }
+                    DescriptorValue::StorageBuffer {
+                        buffer,
+                        array_element,
+                    } => {
+                        let buffer = buffer.internal();
+                        buffers.push(
+                            vk::DescriptorBufferInfo::builder()
+                                .buffer(buffer.buffer)
+                                .offset(buffer.aligned_size * (*array_element) as u64)
+                                .range(buffer.aligned_size)
+                                .build(),
+                        );
+
+                        writes.push(
+                            vk::WriteDescriptorSet::builder()
+                                .dst_set(set.set)
+                                .dst_binding(update.binding)
+                                .dst_array_element(update.array_element as u32)
+                                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                                .buffer_info(&buffers[buffers.len() - 1..])
+                                .build(),
+                        );
+
+                        Binding {
+                            access,
+                            stage,
+                            value: BoundValue::StorageBuffer {
+                                ref_counter: buffer.ref_counter.clone(),
+                                buffer: buffer.buffer,
+                                array_element: *array_element,
+                            },
+                        }
+                    }
+                    DescriptorValue::Texture => todo!(),
+                }
+            });
+        }
+
+        self.device.update_descriptor_sets(&writes, &[]);
     }
 }
 
@@ -1005,6 +1155,7 @@ impl VulkanBackend {
             framebuffers: FramebufferCache::default(),
             garbage: GarbageCollector::new(),
             resource_state: ShardedLock::new(ResourceState::default()),
+            pools: Mutex::new(DescriptorPools::default()),
         };
 
         Ok(ctx)
@@ -1032,8 +1183,9 @@ impl Drop for VulkanBackend {
             };
 
             let mut allocator = self.allocator.lock().unwrap();
+            let mut pools = self.pools.lock().unwrap();
             self.garbage
-                .cleanup(&self.device, &mut allocator, current, target);
+                .cleanup(&self.device, &mut allocator, &mut pools, current, target);
             std::mem::drop(allocator);
             std::mem::drop(ManuallyDrop::take(&mut self.allocator));
             self.framebuffers.release(&self.device);
@@ -1320,6 +1472,28 @@ unsafe fn find_render_pass_resources(
                     access: vk::AccessFlags::INDEX_READ,
                 },
             )),
+            Command::BindDescriptorSets { sets, .. } => {
+                for set in sets {
+                    for binding in &set.internal().bound {
+                        for elem in binding {
+                            if let Some(elem) = elem {
+                                let usage = ResourceUsage {
+                                    used: elem.stage,
+                                    access: elem.access,
+                                };
+                                match &elem.value {
+                                    BoundValue::UniformBuffer { buffer, .. } => {
+                                        buffers.push((*buffer, usage))
+                                    }
+                                    BoundValue::StorageBuffer { buffer, .. } => {
+                                        buffers.push((*buffer, usage))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             Command::EndRenderPass => break,
             _ => {}
         }

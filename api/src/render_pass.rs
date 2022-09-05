@@ -1,6 +1,7 @@
 use crate::{
     buffer::Buffer,
     command_buffer::Command,
+    descriptor_set::DescriptorSet,
     graphics_pipeline::GraphicsPipeline,
     surface::SurfaceImage,
     types::{IndexType, LoadOp, StoreOp},
@@ -35,6 +36,12 @@ impl<'a, B: Backend> RenderPass<'a, B> {
     #[inline]
     pub fn bind_pipeline(&mut self, pipeline: GraphicsPipeline<B>) {
         self.commands.push(Command::BindGraphicsPipeline(pipeline));
+    }
+
+    #[inline]
+    pub fn bind_sets(&mut self, first: usize, sets: Vec<&'a DescriptorSet<B>>) {
+        self.commands
+            .push(Command::BindDescriptorSets { sets, first });
     }
 
     #[inline]

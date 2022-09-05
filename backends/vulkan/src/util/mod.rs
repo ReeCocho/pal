@@ -78,7 +78,7 @@ pub(crate) fn to_vk_descriptor_type(ty: DescriptorType) -> vk::DescriptorType {
     match ty {
         DescriptorType::Texture => vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
         DescriptorType::UniformBuffer => vk::DescriptorType::UNIFORM_BUFFER,
-        DescriptorType::StorageBuffer => vk::DescriptorType::STORAGE_BUFFER,
+        DescriptorType::StorageBuffer(_) => vk::DescriptorType::STORAGE_BUFFER,
     }
 }
 
@@ -96,6 +96,16 @@ pub(crate) fn to_vk_vertex_format(format: VertexFormat) -> vk::Format {
         VertexFormat::XF32 => vk::Format::R32_SFLOAT,
         VertexFormat::XyF32 => vk::Format::R32G32_SFLOAT,
         VertexFormat::XyzwF32 => vk::Format::R32G32B32A32_SFLOAT,
+    }
+}
+
+#[inline(always)]
+pub(crate) fn to_vk_shader_stage(ss: ShaderStage) -> vk::ShaderStageFlags {
+    match ss {
+        ShaderStage::AllGraphics => vk::ShaderStageFlags::ALL_GRAPHICS,
+        ShaderStage::Vertex => vk::ShaderStageFlags::VERTEX,
+        ShaderStage::Fragment => vk::ShaderStageFlags::FRAGMENT,
+        ShaderStage::Compute => vk::ShaderStageFlags::COMPUTE,
     }
 }
 

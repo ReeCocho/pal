@@ -1,5 +1,6 @@
 use crate::{
     buffer::Buffer,
+    descriptor_set::DescriptorSet,
     graphics_pipeline::GraphicsPipeline,
     render_pass::{RenderPass, RenderPassDescriptor, VertexBind},
     types::IndexType,
@@ -20,6 +21,10 @@ pub enum Command<'a, B: Backend> {
     BeginRenderPass(RenderPassDescriptor<'a, B>),
     EndRenderPass,
     BindGraphicsPipeline(GraphicsPipeline<B>),
+    BindDescriptorSets {
+        sets: Vec<&'a DescriptorSet<B>>,
+        first: usize,
+    },
     BindVertexBuffers {
         first: usize,
         binds: Vec<VertexBind<'a, B>>,

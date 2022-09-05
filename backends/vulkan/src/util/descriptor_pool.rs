@@ -6,6 +6,12 @@ use ash::vk;
 /// Default number of sets per pool.
 const SETS_PER_POOL: usize = 16;
 
+#[derive(Default)]
+pub(crate) struct DescriptorPools {
+    pools: HashMap<DescriptorSetLayoutCreateInfo, DescriptorPool>,
+    layout_to_create_info: HashMap<vk::DescriptorSetLayout, DescriptorSetLayoutCreateInfo>,
+}
+
 pub(crate) struct DescriptorPool {
     /// # Note
     /// The layout is held in an array for convenience when allocating pools.
@@ -20,11 +26,43 @@ pub(crate) struct DescriptorPool {
     sizes: Vec<vk::DescriptorPoolSize>,
 }
 
-impl DescriptorPool {
-    pub unsafe fn new(
+impl DescriptorPools {
+    #[inline]
+    pub unsafe fn get(
+        &mut self,
         device: &ash::Device,
-        create_info: &DescriptorSetLayoutCreateInfo<crate::VulkanBackend>,
-    ) -> Self {
+        create_info: DescriptorSetLayoutCreateInfo,
+    ) -> &mut DescriptorPool {
+        if !self.pools.contains_key(&create_info) {
+            let pool = DescriptorPool::new(device, &create_info);
+            self.layout_to_create_info
+                .insert(pool.layout[0], create_info.clone());
+            self.pools.insert(create_info.clone(), pool);
+        }
+        self.pools.get_mut(&create_info).unwrap()
+    }
+
+    #[inline]
+    pub unsafe fn get_by_layout(
+        &mut self,
+        layout: vk::DescriptorSetLayout,
+    ) -> Option<&mut DescriptorPool> {
+        let ci = match self.layout_to_create_info.get(&layout) {
+            Some(ci) => ci,
+            None => return None,
+        };
+        self.pools.get_mut(ci)
+    }
+
+    pub unsafe fn release(&mut self, device: &ash::Device) {
+        for (_, mut pool) in self.pools.drain() {
+            pool.release(device);
+        }
+    }
+}
+
+impl DescriptorPool {
+    pub unsafe fn new(device: &ash::Device, create_info: &DescriptorSetLayoutCreateInfo) -> Self {
         // Convert the api layout into a vulkan layout
         let mut bindings = Vec::default();
         for binding in &create_info.bindings {
@@ -33,6 +71,7 @@ impl DescriptorPool {
                     .binding(binding.binding)
                     .descriptor_count(binding.count as u32)
                     .descriptor_type(super::to_vk_descriptor_type(binding.ty))
+                    .stage_flags(crate::util::to_vk_shader_stage(binding.stage))
                     .build(),
             );
         }
@@ -72,5 +111,48 @@ impl DescriptorPool {
             free: Vec::default(),
             sizes,
         }
+    }
+
+    #[inline(always)]
+    pub fn layout(&self) -> vk::DescriptorSetLayout {
+        self.layout[0]
+    }
+
+    #[inline]
+    pub fn free(&mut self, set: vk::DescriptorSet) {
+        self.free.push(set);
+    }
+
+    pub unsafe fn allocate(&mut self, device: &ash::Device) -> vk::DescriptorSet {
+        if let Some(free) = self.free.pop() {
+            return free;
+        }
+
+        // Allocate a new pool if required
+        if self.size == 0 {
+            self.size = SETS_PER_POOL;
+            self.pools.push({
+                let create_info = vk::DescriptorPoolCreateInfo::builder()
+                    .max_sets(self.size as u32)
+                    .pool_sizes(&self.sizes)
+                    .build();
+                device.create_descriptor_pool(&create_info, None).unwrap()
+            });
+        }
+
+        // Allocate new set
+        self.size -= 1;
+        let alloc_info = vk::DescriptorSetAllocateInfo::builder()
+            .descriptor_pool(*self.pools.last().unwrap())
+            .set_layouts(&self.layout)
+            .build();
+        device.allocate_descriptor_sets(&alloc_info).unwrap()[0]
+    }
+
+    pub unsafe fn release(&mut self, device: &ash::Device) {
+        for pool in self.pools.drain(..) {
+            device.destroy_descriptor_pool(pool, None);
+        }
+        device.destroy_descriptor_set_layout(self.layout[0], None);
     }
 }
