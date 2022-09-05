@@ -1,0 +1,22 @@
+[package]
+name = "pal"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+members = [
+    "api",
+    "backends/vulkan"
+]
+
+[features]
+default = [ "vulkan" ]
+vulkan = [ "dep:vulkan" ]
+
+[dependencies]
+api = { path = "./api/", version = "0.1" }
+vulkan = { path = "./backends/vulkan/", version = "0.1", optional = true }
+
+[dev-dependencies]
+winit = "0.27"
+bytemuck = "1"
