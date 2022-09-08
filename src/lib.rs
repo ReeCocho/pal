@@ -47,6 +47,10 @@ pub mod prelude {
         BufferCreateError, BufferCreateInfo, BufferReadView, BufferViewError, BufferWriteView,
     };
 
+    // Texture
+    pub type Texture = api::texture::Texture<crate::Backend>;
+    pub use api::texture::{TextureCreateError, TextureCreateInfo};
+
     // Descriptor set & layout
     pub type DescriptorSetLayout = api::descriptor_set::DescriptorSetLayout<crate::Backend>;
     pub type DescriptorSet = api::descriptor_set::DescriptorSet<crate::Backend>;

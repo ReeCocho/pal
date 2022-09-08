@@ -78,7 +78,10 @@ impl Buffer {
         // Allocate memory
         let mem_reqs = device.get_buffer_memory_requirements(buffer);
         let request = AllocationCreateDesc {
-            name: "buffer",
+            name: match &create_info.debug_name {
+                Some(name) => &name,
+                None => "buffer",
+            },
             requirements: mem_reqs,
             location: crate::util::to_gpu_allocator_memory_location(create_info.memory_usage),
             linear: true,

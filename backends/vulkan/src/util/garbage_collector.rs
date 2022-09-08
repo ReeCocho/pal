@@ -4,7 +4,7 @@ use ash::vk;
 use crossbeam_channel::{Receiver, Sender};
 use gpu_allocator::vulkan::{Allocation, Allocator};
 
-use crate::buffer::BufferRefCounter;
+use crate::{buffer::BufferRefCounter, texture::TextureRefCounter};
 
 use super::{descriptor_pool::DescriptorPools, pipeline_cache::PipelineCache};
 
@@ -21,6 +21,11 @@ pub(crate) enum Garbage {
         buffer: vk::Buffer,
         allocation: Allocation,
         ref_counter: BufferRefCounter,
+    },
+    Texture {
+        image: vk::Image,
+        allocation: Allocation,
+        ref_counter: TextureRefCounter,
     },
     DescriptorSet {
         set: vk::DescriptorSet,
@@ -81,6 +86,11 @@ impl GarbageCollector {
                         continue;
                     }
                 }
+                Garbage::Texture { ref_counter, .. } => {
+                    if !ref_counter.is_last() {
+                        continue;
+                    }
+                }
                 _ => {}
             }
 
@@ -108,6 +118,12 @@ impl GarbageCollector {
                     buffer, allocation, ..
                 } => {
                     device.destroy_buffer(buffer, None);
+                    allocator.free(allocation).unwrap();
+                }
+                Garbage::Texture {
+                    image, allocation, ..
+                } => {
+                    device.destroy_image(image, None);
                     allocator.free(allocation).unwrap();
                 }
                 Garbage::DescriptorSet { set, layout } => {

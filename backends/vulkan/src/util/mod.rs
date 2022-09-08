@@ -234,6 +234,39 @@ pub(crate) fn to_vk_buffer_usage(bu: BufferUsage) -> vk::BufferUsageFlags {
 }
 
 #[inline(always)]
+pub(crate) fn to_vk_image_usage(iu: TextureUsage) -> vk::ImageUsageFlags {
+    let mut out = vk::ImageUsageFlags::default();
+    if iu.contains(TextureUsage::TRANSFER_SRC) {
+        out |= vk::ImageUsageFlags::TRANSFER_SRC;
+    }
+    if iu.contains(TextureUsage::TRANSFER_DST) {
+        out |= vk::ImageUsageFlags::TRANSFER_DST;
+    }
+    if iu.contains(TextureUsage::SAMPLED) {
+        out |= vk::ImageUsageFlags::SAMPLED;
+    }
+    if iu.contains(TextureUsage::STORAGE) {
+        out |= vk::ImageUsageFlags::STORAGE;
+    }
+    if iu.contains(TextureUsage::COLOR_ATTACHMENT) {
+        out |= vk::ImageUsageFlags::COLOR_ATTACHMENT;
+    }
+    if iu.contains(TextureUsage::DEPTH_STENCIL_ATTACHMENT) {
+        out |= vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT;
+    }
+    out
+}
+
+#[inline(always)]
+pub(crate) fn to_vk_image_type(it: ImageType) -> vk::ImageType {
+    match it {
+        ImageType::OneDimension => vk::ImageType::TYPE_1D,
+        ImageType::TwoDimensions => vk::ImageType::TYPE_2D,
+        ImageType::ThreeDimensions => vk::ImageType::TYPE_3D,
+    }
+}
+
+#[inline(always)]
 pub(crate) fn to_gpu_allocator_memory_location(mu: MemoryUsage) -> MemoryLocation {
     match mu {
         MemoryUsage::Unknown => MemoryLocation::Unknown,

@@ -29,7 +29,7 @@ use surface::{
     SurfaceConfiguration, SurfaceCreateError, SurfaceCreateInfo, SurfaceImageAcquireError,
     SurfacePresentSuccess, SurfaceUpdateError,
 };
-use texture::TextureCreateInfo;
+use texture::{TextureCreateError, TextureCreateInfo};
 use types::{JobStatus, QueueType};
 
 pub trait Backend: Sized + 'static {
@@ -78,7 +78,10 @@ pub trait Backend: Sized + 'static {
         &self,
         create_info: BufferCreateInfo,
     ) -> Result<Self::Buffer, BufferCreateError>;
-    unsafe fn create_texture(&self, create_info: TextureCreateInfo<Self>) -> Self::Texture;
+    unsafe fn create_texture(
+        &self,
+        create_info: TextureCreateInfo,
+    ) -> Result<Self::Texture, TextureCreateError>;
     unsafe fn create_shader(
         &self,
         create_info: ShaderCreateInfo,

@@ -14,6 +14,7 @@ use api::{
         SurfaceConfiguration, SurfaceCreateError, SurfaceCreateInfo, SurfaceImageAcquireError,
         SurfacePresentSuccess, SurfaceUpdateError,
     },
+    texture::{TextureCreateError, TextureCreateInfo},
     types::*,
     Backend,
 };
@@ -37,6 +38,7 @@ use std::{
     sync::Mutex,
 };
 use surface::{Surface, SurfaceImage};
+use texture::Texture;
 use thiserror::Error;
 use util::{
     descriptor_pool::DescriptorPools,
@@ -58,6 +60,7 @@ pub mod queue;
 pub mod render_pass;
 pub mod shader;
 pub mod surface;
+pub mod texture;
 pub mod util;
 
 pub struct VulkanBackendCreateInfo<'a, W: HasRawWindowHandle> {
@@ -127,7 +130,7 @@ struct PhysicalDeviceQuery {
 
 impl Backend for VulkanBackend {
     type Buffer = Buffer;
-    type Texture = ();
+    type Texture = Texture;
     type Surface = Surface;
     type SurfaceImage = SurfaceImage;
     type Shader = Shader;
@@ -577,11 +580,18 @@ impl Backend for VulkanBackend {
         )
     }
 
+    #[inline(always)]
     unsafe fn create_texture(
         &self,
-        create_info: api::texture::TextureCreateInfo<Self>,
-    ) -> Self::Texture {
-        todo!()
+        create_info: TextureCreateInfo,
+    ) -> Result<Self::Texture, TextureCreateError> {
+        Texture::new(
+            &self.device,
+            self.debug.as_ref().map(|(utils, _)| utils),
+            self.garbage.sender(),
+            &mut self.allocator.lock().unwrap(),
+            create_info,
+        )
     }
 
     #[inline(always)]
@@ -648,7 +658,7 @@ impl Backend for VulkanBackend {
     }
 
     unsafe fn destroy_texture(&self, id: &mut Self::Texture) {
-        todo!()
+        // Handled in drop
     }
 
     #[inline(always)]

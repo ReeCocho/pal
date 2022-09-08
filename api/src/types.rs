@@ -176,14 +176,32 @@ pub enum ShaderStage {
 
 bitflags! {
     pub struct BufferUsage: u32 {
-        const TRANSFER_SRC       = 0b0000001;
-        const TRANSFER_DST       = 0b0000010;
-        const UNIFORM_BUFFER     = 0b0000100;
-        const STORAGE_BUFFER     = 0b0001000;
-        const VERTEX_BUFFER      = 0b0010000;
-        const INDEX_BUFFER       = 0b0100000;
-        const INDIRECT_BUFFER    = 0b1000000;
+        const TRANSFER_SRC    = 0b0000001;
+        const TRANSFER_DST    = 0b0000010;
+        const UNIFORM_BUFFER  = 0b0000100;
+        const STORAGE_BUFFER  = 0b0001000;
+        const VERTEX_BUFFER   = 0b0010000;
+        const INDEX_BUFFER    = 0b0100000;
+        const INDIRECT_BUFFER = 0b1000000;
     }
+}
+
+bitflags! {
+    pub struct TextureUsage: u32 {
+        const TRANSFER_SRC             = 0b0000001;
+        const TRANSFER_DST             = 0b0000010;
+        const SAMPLED                  = 0b0000100;
+        const STORAGE                  = 0b0001000;
+        const COLOR_ATTACHMENT         = 0b0010000;
+        const DEPTH_STENCIL_ATTACHMENT = 0b0100000;
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ImageType {
+    OneDimension,
+    TwoDimensions,
+    ThreeDimensions,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
