@@ -1,9 +1,9 @@
-use std::collections::{HashSet, VecDeque};
+use std::{collections::VecDeque, ffi::CString};
 
 use api::types::QueueType;
-use ash::vk;
+use ash::vk::{self, Handle};
 
-use crate::util::semaphores::{OutSemaphores, SemaphoreTracker, WaitInfo};
+use crate::util::semaphores::{SemaphoreTracker, WaitInfo};
 
 pub(crate) struct VkQueue {
     pub queue: vk::Queue,
@@ -13,6 +13,8 @@ pub(crate) struct VkQueue {
     command_pool: vk::CommandPool,
     /// Queue of free command buffers.
     free: VecDeque<ActiveCommandBuffer>,
+    /// Total number of command buffers.
+    command_buffer_count: usize,
     /// All work performed on this queue increments the value of this semaphore.
     semaphore: vk::Semaphore,
     /// The last timeline semaphore value this queue was synced to.
@@ -30,6 +32,7 @@ struct ActiveCommandBuffer {
 impl VkQueue {
     pub unsafe fn new(
         device: &ash::Device,
+        debug: Option<&ash::extensions::ext::DebugUtils>,
         queue: vk::Queue,
         ty: QueueType,
         queue_family: u32,
@@ -52,12 +55,67 @@ impl VkQueue {
             .build();
         let command_pool = device.create_command_pool(&create_info, None)?;
 
+        // Name objects
+        if let Some(debug) = debug {
+            let (queue_name, semaphore_name, pool_name) = match ty {
+                QueueType::Main => (
+                    CString::new("main_queue").unwrap(),
+                    CString::new("main_semaphore").unwrap(),
+                    CString::new("main_pool").unwrap(),
+                ),
+                QueueType::Transfer => (
+                    CString::new("transfer_queue").unwrap(),
+                    CString::new("transfer_semaphore").unwrap(),
+                    CString::new("transfer_pool").unwrap(),
+                ),
+                QueueType::Compute => (
+                    CString::new("compute_queue").unwrap(),
+                    CString::new("compute_semaphore").unwrap(),
+                    CString::new("compute_pool").unwrap(),
+                ),
+                QueueType::Present => (
+                    CString::new("present_queue").unwrap(),
+                    CString::new("present_semaphore").unwrap(),
+                    CString::new("present_pool").unwrap(),
+                ),
+            };
+
+            let queue_name_info = vk::DebugUtilsObjectNameInfoEXT::builder()
+                .object_type(vk::ObjectType::QUEUE)
+                .object_handle(queue.as_raw())
+                .object_name(&queue_name)
+                .build();
+
+            let semaphore_name_info = vk::DebugUtilsObjectNameInfoEXT::builder()
+                .object_type(vk::ObjectType::SEMAPHORE)
+                .object_handle(semaphore.as_raw())
+                .object_name(&semaphore_name)
+                .build();
+
+            let pool_name_info = vk::DebugUtilsObjectNameInfoEXT::builder()
+                .object_type(vk::ObjectType::COMMAND_POOL)
+                .object_handle(command_pool.as_raw())
+                .object_name(&pool_name)
+                .build();
+
+            debug
+                .debug_utils_set_object_name(device.handle(), &queue_name_info)
+                .unwrap();
+            debug
+                .debug_utils_set_object_name(device.handle(), &semaphore_name_info)
+                .unwrap();
+            debug
+                .debug_utils_set_object_name(device.handle(), &pool_name_info)
+                .unwrap();
+        }
+
         Ok(Self {
             queue,
             semaphore,
             ty,
             command_pool,
             free: VecDeque::default(),
+            command_buffer_count: 0,
             queue_family,
             last_sync: 0,
             target_value: 0,
@@ -79,7 +137,11 @@ impl VkQueue {
         device.get_semaphore_counter_value(self.semaphore).unwrap()
     }
 
-    pub unsafe fn allocate_command_buffer(&mut self, device: &ash::Device) -> vk::CommandBuffer {
+    pub unsafe fn allocate_command_buffer(
+        &mut self,
+        device: &ash::Device,
+        debug: Option<&ash::extensions::ext::DebugUtils>,
+    ) -> vk::CommandBuffer {
         // Check current timeline value
         let cur_value = device.get_semaphore_counter_value(self.semaphore).unwrap();
 
@@ -103,7 +165,42 @@ impl VkQueue {
                     .command_pool(self.command_pool)
                     .level(vk::CommandBufferLevel::PRIMARY)
                     .build();
-                device.allocate_command_buffers(&alloc_info).unwrap()[0]
+                let cb = device.allocate_command_buffers(&alloc_info).unwrap()[0];
+
+                // Name the command buffer
+                if let Some(debug) = debug {
+                    let name = match self.ty {
+                        QueueType::Main => CString::new(format!(
+                            "main_command_buffer_{}",
+                            self.command_buffer_count
+                        )),
+                        QueueType::Transfer => CString::new(format!(
+                            "transfer_command_buffer_{}",
+                            self.command_buffer_count
+                        )),
+                        QueueType::Compute => CString::new(format!(
+                            "compute_command_buffer_{}",
+                            self.command_buffer_count
+                        )),
+                        QueueType::Present => CString::new(format!(
+                            "present_command_buffer_{}",
+                            self.command_buffer_count
+                        )),
+                    }
+                    .unwrap();
+
+                    let name_info = vk::DebugUtilsObjectNameInfoEXT::builder()
+                        .object_type(vk::ObjectType::COMMAND_BUFFER)
+                        .object_handle(cb.as_raw())
+                        .object_name(&name)
+                        .build();
+                    debug
+                        .debug_utils_set_object_name(device.handle(), &name_info)
+                        .unwrap();
+                }
+
+                self.command_buffer_count += 1;
+                cb
             }
         }
     }
@@ -138,10 +235,6 @@ impl VkQueue {
         let mut waits = Vec::with_capacity(semaphores.waits.len());
         let mut wait_values = Vec::with_capacity(semaphores.waits.len());
         let mut wait_stages = Vec::with_capacity(semaphores.waits.len());
-
-        // Always signal our own semaphore
-        signals.push(self.semaphore);
-        signal_values.push(self.target_value);
 
         // Find all semaphores
         for (semaphore, info) in &semaphores.waits {

@@ -1,6 +1,5 @@
-use api::{
-    command_buffer::CopyBufferToBuffer, render_pass::VertexBind, surface::SurfacePresentSuccess,
-};
+/// This example demonstrates how to draw a simple triangle, including the use of staging buffers
+/// and the async transfer queue.
 use pal::prelude::*;
 use vulkan::{VulkanBackend, VulkanBackendCreateInfo};
 use winit::{
@@ -38,6 +37,7 @@ fn main() {
                 format: TextureFormat::Bgra8Unorm,
             },
             window: &window,
+            debug_name: Some(String::from("surface")),
         },
     )
     .unwrap();
@@ -49,8 +49,12 @@ fn main() {
         1.0, -1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, // Third
         0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0,
     ];
-    let vertex_staging =
-        Buffer::new_staging(context.clone(), bytemuck::cast_slice(&VERTICES)).unwrap();
+    let vertex_staging = Buffer::new_staging(
+        context.clone(),
+        Some(String::from("vertex_staging")),
+        bytemuck::cast_slice(&VERTICES),
+    )
+    .unwrap();
 
     let vertex_buffer = Buffer::new(
         context.clone(),
@@ -59,13 +63,19 @@ fn main() {
             array_elements: 1,
             buffer_usage: BufferUsage::VERTEX_BUFFER | BufferUsage::TRANSFER_DST,
             memory_usage: MemoryUsage::GpuOnly,
+            debug_name: Some(String::from("vertex_buffer")),
         },
     )
     .unwrap();
 
     // Create index buffer
     const INDEX: &'static [u16] = &[0, 1, 2];
-    let index_staging = Buffer::new_staging(context.clone(), bytemuck::cast_slice(&INDEX)).unwrap();
+    let index_staging = Buffer::new_staging(
+        context.clone(),
+        Some(String::from("index_staging")),
+        bytemuck::cast_slice(&INDEX),
+    )
+    .unwrap();
 
     let index_buffer = Buffer::new(
         context.clone(),
@@ -74,32 +84,35 @@ fn main() {
             array_elements: 1,
             buffer_usage: BufferUsage::INDEX_BUFFER | BufferUsage::TRANSFER_DST,
             memory_usage: MemoryUsage::GpuOnly,
+            debug_name: Some(String::from("index_buffer")),
         },
     )
     .unwrap();
 
     // Write the staging buffers to the primary buffers
-    context.transfer().submit(|command_buffer| {
-        command_buffer.copy_buffer_to_buffer(CopyBufferToBuffer {
-            src: &index_staging,
-            src_array_element: 0,
-            src_offset: 0,
-            dst: &index_buffer,
-            dst_array_element: 0,
-            dst_offset: 0,
-            len: index_buffer.size(),
-        });
+    context
+        .transfer()
+        .submit(Some("buffer_upload"), |command_buffer| {
+            command_buffer.copy_buffer_to_buffer(CopyBufferToBuffer {
+                src: &index_staging,
+                src_array_element: 0,
+                src_offset: 0,
+                dst: &index_buffer,
+                dst_array_element: 0,
+                dst_offset: 0,
+                len: index_buffer.size(),
+            });
 
-        command_buffer.copy_buffer_to_buffer(CopyBufferToBuffer {
-            src: &vertex_staging,
-            src_array_element: 0,
-            src_offset: 0,
-            dst: &vertex_buffer,
-            dst_array_element: 0,
-            dst_offset: 0,
-            len: vertex_buffer.size(),
+            command_buffer.copy_buffer_to_buffer(CopyBufferToBuffer {
+                src: &vertex_staging,
+                src_array_element: 0,
+                src_offset: 0,
+                dst: &vertex_buffer,
+                dst_array_element: 0,
+                dst_offset: 0,
+                len: vertex_buffer.size(),
+            });
         });
-    });
     std::mem::drop(vertex_staging);
     std::mem::drop(index_staging);
 
@@ -108,6 +121,7 @@ fn main() {
         context.clone(),
         ShaderCreateInfo {
             code: include_bytes!("./shaders/triangle.vert.spv"),
+            debug_name: Some(String::from("vertex_shader")),
         },
     )
     .unwrap();
@@ -116,6 +130,7 @@ fn main() {
         context.clone(),
         ShaderCreateInfo {
             code: include_bytes!("./shaders/triangle.frag.spv"),
+            debug_name: Some(String::from("fragment_shader")),
         },
     )
     .unwrap();
@@ -164,6 +179,7 @@ fn main() {
                     ..Default::default()
                 }],
             }),
+            debug_name: Some(String::from("graphics_pipeline")),
         },
     )
     .unwrap();
@@ -185,7 +201,7 @@ fn main() {
 
                 let surface_image = surface.acquire_image().unwrap();
 
-                context.main().submit(|command_buffer| {
+                context.main().submit(Some("main_pass"), |command_buffer| {
                     command_buffer.render_pass(
                         RenderPassDescriptor {
                             color_attachments: vec![ColorAttachment {

@@ -75,12 +75,14 @@ pub struct GraphicsPipelineCreateInfo<B: Backend> {
     pub rasterization: RasterizationState,
     pub depth_stencil: Option<DepthStencilState>,
     pub color_blend: Option<ColorBlendState>,
+    pub debug_name: Option<String>,
 }
 
 pub struct GraphicsPipeline<B: Backend>(pub(crate) Arc<GraphicsPipelineInner<B>>);
 
 pub(crate) struct GraphicsPipelineInner<B: Backend> {
     ctx: Context<B>,
+    pub(crate) layouts: Vec<DescriptorSetLayout<B>>,
     pub(crate) id: B::GraphicsPipeline,
 }
 
@@ -99,13 +101,19 @@ impl<B: Backend> GraphicsPipeline<B> {
         ctx: Context<B>,
         create_info: GraphicsPipelineCreateInfo<B>,
     ) -> Result<Self, GraphicsPipelineCreateError> {
+        let layouts = create_info.layouts.clone();
         let id = unsafe { ctx.0.create_graphics_pipeline(create_info)? };
-        Ok(Self(Arc::new(GraphicsPipelineInner { ctx, id })))
+        Ok(Self(Arc::new(GraphicsPipelineInner { ctx, id, layouts })))
     }
 
     #[inline(always)]
     pub fn internal(&self) -> &B::GraphicsPipeline {
         &self.0.id
+    }
+
+    #[inline(always)]
+    pub fn layouts(&self) -> &[DescriptorSetLayout<B>] {
+        &self.0.layouts
     }
 }
 

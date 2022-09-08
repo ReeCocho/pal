@@ -1,13 +1,14 @@
 use api::{
     buffer::{BufferCreateError, BufferCreateInfo, BufferViewError},
     command_buffer::Command,
+    compute_pipeline::{ComputePipelineCreateError, ComputePipelineCreateInfo},
     descriptor_set::{
         DescriptorSetCreateError, DescriptorSetCreateInfo, DescriptorSetLayoutCreateError,
-        DescriptorSetLayoutCreateInfo, DescriptorSetUpdate, DescriptorType, DescriptorValue,
+        DescriptorSetLayoutCreateInfo, DescriptorSetUpdate,
     },
     graphics_pipeline::{GraphicsPipelineCreateError, GraphicsPipelineCreateInfo},
     queue::SurfacePresentFailure,
-    render_pass::{ColorAttachmentSource, RenderPassDescriptor},
+    render_pass::ColorAttachmentSource,
     shader::{ShaderCreateError, ShaderCreateInfo},
     surface::{
         SurfaceConfiguration, SurfaceCreateError, SurfaceCreateInfo, SurfaceImageAcquireError,
@@ -18,10 +19,12 @@ use api::{
 };
 use ash::vk::{self, DebugUtilsMessageSeverityFlagsEXT};
 use buffer::Buffer;
+use compute_pipeline::ComputePipeline;
 use crossbeam_utils::sync::ShardedLock;
-use descriptor_set::{Binding, BoundValue, DescriptorSet, DescriptorSetLayout};
+use descriptor_set::{DescriptorSet, DescriptorSetLayout};
 use gpu_allocator::vulkan::*;
 use graphics_pipeline::GraphicsPipeline;
+use job::Job;
 use queue::VkQueue;
 use raw_window_handle::HasRawWindowHandle;
 use render_pass::{FramebufferCache, RenderPassCache};
@@ -39,16 +42,17 @@ use util::{
     descriptor_pool::DescriptorPools,
     garbage_collector::{GarbageCollector, TimelineValues},
     pipeline_tracker::PipelineTracker,
-    resource_state::{LatestUsage, ResourceState},
-    semaphores::{SemaphoreTracker, WaitInfo},
+    resource_state::ResourceState,
+    semaphores::SemaphoreTracker,
+    tracking::TrackState,
 };
-
-use crate::util::pipeline_tracker::ResourceUsage;
 
 pub mod buffer;
 pub mod command_buffer;
+pub mod compute_pipeline;
 pub mod descriptor_set;
 pub mod graphics_pipeline;
+pub mod job;
 pub mod queue;
 pub mod render_pass;
 pub mod shader;
@@ -126,51 +130,25 @@ impl Backend for VulkanBackend {
     type SurfaceImage = SurfaceImage;
     type Shader = Shader;
     type GraphicsPipeline = GraphicsPipeline;
+    type ComputePipeline = ComputePipeline;
     type DescriptorSetLayout = DescriptorSetLayout;
     type DescriptorSet = DescriptorSet;
-    type Job = ();
+    type Job = Job;
 
+    #[inline(always)]
     unsafe fn create_surface<'a, W: HasRawWindowHandle>(
         &self,
         create_info: SurfaceCreateInfo<'a, W>,
     ) -> Result<Self::Surface, SurfaceCreateError> {
-        // Create the surface
-        let surface =
-            match ash_window::create_surface(&self.entry, &self.instance, create_info.window, None)
-            {
-                Ok(surface) => surface,
-                Err(err) => return Err(SurfaceCreateError::Other(err.to_string())),
-            };
-
-        let mut surface = Surface {
-            surface,
-            swapchain: vk::SwapchainKHR::null(),
-            format: vk::SurfaceFormatKHR::default(),
-            resolution: vk::Extent2D::default(),
-            images: Vec::default(),
-            semaphores: Vec::default(),
-            next_semaphore: 0,
-            images_acquired: 0,
-        };
-
-        // Update the surface with the provided configuration
-        if let Err(err) = surface.update_config(self, create_info.config) {
-            return Err(SurfaceCreateError::BadConfig(err));
-        }
-
-        Ok(surface)
+        Surface::new(self, create_info)
     }
 
     #[inline(always)]
     unsafe fn destroy_surface(&self, surface: &mut Self::Surface) {
+        // This shouldn't happen often, so we'll wait for all work to complete
         self.device.device_wait_idle().unwrap();
         surface.release(self);
         self.surface_loader.destroy_surface(surface.surface, None);
-    }
-
-    #[inline(always)]
-    unsafe fn surface_dimensions(&self, surface: &Self::Surface) -> (u32, u32) {
-        surface.dimensions()
     }
 
     #[inline(always)]
@@ -198,48 +176,32 @@ impl Backend for VulkanBackend {
         surface.acquire_image(self)
     }
 
+    #[inline(always)]
     unsafe fn present_image(
         &self,
         surface: &Self::Surface,
         image: &mut Self::SurfaceImage,
     ) -> Result<SurfacePresentSuccess, SurfacePresentFailure> {
-        if image.surface() != surface.surface {
-            return Err(SurfacePresentFailure::BadImage);
-        }
-
-        if !image.is_signaled() {
-            return Err(SurfacePresentFailure::NoRender);
-        }
-
-        // Present
-        let invalidated = {
-            let idx = [image.index() as u32];
-            let swapchain = [surface.swapchain];
-            let presentable = [image.semaphores().presentable];
-            let present_info = vk::PresentInfoKHR::builder()
-                .image_indices(&idx)
-                .swapchains(&swapchain)
-                .wait_semaphores(&presentable)
-                .build();
-            self.swapchain_loader
-                .queue_present(self.present.try_read().unwrap().queue, &present_info)
-                .unwrap_or(true)
-        };
-
-        if invalidated {
-            Ok(SurfacePresentSuccess::Invalidated)
-        } else {
-            Ok(SurfacePresentSuccess::Ok)
-        }
+        surface.present(
+            image,
+            &self.swapchain_loader,
+            self.present.try_read().unwrap().queue,
+        )
     }
 
+    #[inline(always)]
     unsafe fn destroy_surface_image(&self, image: &mut Self::SurfaceImage) {
         if !image.is_signaled() {
             todo!()
         }
     }
 
-    unsafe fn submit_commands<'a>(&self, queue: QueueType, commands: Vec<Command<'a, Self>>) {
+    unsafe fn submit_commands<'a>(
+        &self,
+        queue: QueueType,
+        debug_name: Option<&str>,
+        commands: Vec<Command<'a, Self>>,
+    ) -> Job {
         // Lock down all neccesary objects
         let mut resc_state = self.resource_state.write().unwrap();
         let mut allocator = self.allocator.lock().unwrap();
@@ -289,25 +251,43 @@ impl Backend for VulkanBackend {
             QueueType::Compute => &mut compute,
             QueueType::Present => &mut present,
         }
-        .allocate_command_buffer(&self.device);
+        .allocate_command_buffer(&self.device, self.debug.as_ref().map(|(utils, _)| utils));
         let begin_info = vk::CommandBufferBeginInfo::builder()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)
             .build();
         self.device.begin_command_buffer(cb, &begin_info).unwrap();
 
+        // Insert debug name
+        if let Some(name) = debug_name {
+            if let Some((debug, _)) = &self.debug {
+                let name = CString::new(name).unwrap();
+                let label = vk::DebugUtilsLabelEXT::builder().label_name(&name).build();
+                debug.cmd_begin_debug_utils_label(cb, &label);
+            }
+        }
+
         // Interpret commands
-        for command in &commands {
+        for (i, command) in commands.iter().enumerate() {
+            // Track resource state for the command
+            crate::util::tracking::track_resources(TrackState {
+                device: &self.device,
+                command_buffer: cb,
+                index: i,
+                commands: &commands,
+                pipeline_tracker: &mut pipeline_tracker,
+                resc_state: &mut resc_state,
+                semaphores: &mut semaphore_tracker,
+                queue_ty: queue,
+                target_value: next_target_value,
+                main: &main,
+                transfer: &transfer,
+                compute: &compute,
+                present: &present,
+            });
+
+            // Perform command operations
             match command {
                 Command::BeginRenderPass(descriptor) => {
-                    // Barrier check
-                    find_render_pass_resources(
-                        &descriptor,
-                        &commands,
-                        &self.device,
-                        cb,
-                        &mut pipeline_tracker,
-                    );
-
                     // Get the render pass described
                     active_render_pass = self.render_passes.get(&self.device, &descriptor);
 
@@ -319,18 +299,6 @@ impl Backend for VulkanBackend {
                             ColorAttachmentSource::SurfaceImage(image) => {
                                 // Indicate that the surface image has been drawn to
                                 image.internal().signal_draw();
-
-                                // Grab semaphores
-                                let semaphores = image.internal().semaphores();
-                                semaphore_tracker.register_signal(semaphores.presentable, None);
-                                semaphore_tracker.register_wait(
-                                    semaphores.available,
-                                    WaitInfo {
-                                        value: None,
-                                        stage: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                                    },
-                                );
-
                                 dims = image.internal().dims();
                                 image.internal().view()
                             }
@@ -405,13 +373,30 @@ impl Backend for VulkanBackend {
                         .cmd_begin_render_pass(cb, &begin_info, vk::SubpassContents::INLINE);
                 }
                 Command::EndRenderPass => self.device.cmd_end_render_pass(cb),
+                Command::BeginComputePass => {}
+                Command::EndComputePass => {}
+                Command::BindComputePipeline(pipeline) => {
+                    active_layout = pipeline.internal().layout;
+                    self.device.cmd_bind_pipeline(
+                        cb,
+                        vk::PipelineBindPoint::COMPUTE,
+                        pipeline.internal().pipeline,
+                    );
+                }
+                Command::Dispatch(x, y, z) => {
+                    self.device.cmd_dispatch(cb, *x, *y, *z);
+                }
                 Command::BindGraphicsPipeline(pipeline) => {
                     active_layout = pipeline.internal().layout;
-                    let pipeline = pipeline.internal().get(&self.device, active_render_pass);
+                    let pipeline = pipeline.internal().get(
+                        &self.device,
+                        self.debug.as_ref().map(|(utils, _)| utils),
+                        active_render_pass,
+                    );
                     self.device
                         .cmd_bind_pipeline(cb, vk::PipelineBindPoint::GRAPHICS, pipeline);
                 }
-                Command::BindDescriptorSets { sets, first } => {
+                Command::BindDescriptorSets { sets, first, stage } => {
                     let mut vk_sets = Vec::with_capacity(sets.len());
                     for set in sets {
                         vk_sets.push(set.internal().set);
@@ -419,7 +404,10 @@ impl Backend for VulkanBackend {
 
                     self.device.cmd_bind_descriptor_sets(
                         cb,
-                        vk::PipelineBindPoint::GRAPHICS,
+                        match *stage {
+                            ShaderStage::Compute => vk::PipelineBindPoint::COMPUTE,
+                            _ => vk::PipelineBindPoint::GRAPHICS,
+                        },
                         active_layout,
                         *first as u32,
                         &vk_sets,
@@ -431,27 +419,6 @@ impl Backend for VulkanBackend {
                     let mut offsets = Vec::with_capacity(binds.len());
                     for bind in binds {
                         let buffer = bind.buffer.internal();
-
-                        // Semaphore check
-                        if let Some(old) = resc_state.set_buffer(
-                            buffer.buffer,
-                            bind.array_element,
-                            Some(LatestUsage {
-                                queue,
-                                value: next_target_value,
-                            }),
-                        ) {
-                            old.wait_if_needed(
-                                &mut semaphore_tracker,
-                                queue,
-                                vk::PipelineStageFlags::VERTEX_INPUT,
-                                &main,
-                                &transfer,
-                                &compute,
-                                &present,
-                            );
-                        }
-
                         buffers.push(buffer.buffer);
                         offsets
                             .push((buffer.aligned_size * bind.array_element as u64) + bind.offset);
@@ -466,27 +433,6 @@ impl Backend for VulkanBackend {
                     ty,
                 } => {
                     let buffer = buffer.internal();
-
-                    // Semaphore check
-                    if let Some(old) = resc_state.set_buffer(
-                        buffer.buffer,
-                        *array_element,
-                        Some(LatestUsage {
-                            queue,
-                            value: next_target_value,
-                        }),
-                    ) {
-                        old.wait_if_needed(
-                            &mut semaphore_tracker,
-                            queue,
-                            vk::PipelineStageFlags::VERTEX_INPUT,
-                            &main,
-                            &transfer,
-                            &compute,
-                            &present,
-                        );
-                    }
-
                     self.device.cmd_bind_index_buffer(
                         cb,
                         buffer.buffer,
@@ -511,69 +457,8 @@ impl Backend for VulkanBackend {
                     );
                 }
                 Command::CopyBufferToBuffer(copy) => {
-                    // Barrier check
                     let src = copy.src.internal();
                     let dst = copy.dst.internal();
-                    if let Some(barrier) = pipeline_tracker.update(
-                        &[
-                            (
-                                src.buffer,
-                                ResourceUsage {
-                                    used: vk::PipelineStageFlags::TRANSFER,
-                                    access: vk::AccessFlags::TRANSFER_READ,
-                                },
-                            ),
-                            (
-                                dst.buffer,
-                                ResourceUsage {
-                                    used: vk::PipelineStageFlags::TRANSFER,
-                                    access: vk::AccessFlags::TRANSFER_WRITE,
-                                },
-                            ),
-                        ],
-                        &[],
-                    ) {
-                        barrier.execute(&self.device, cb);
-                    }
-
-                    // Semaphore check
-                    if let Some(old) = resc_state.set_buffer(
-                        src.buffer,
-                        copy.src_array_element,
-                        Some(LatestUsage {
-                            queue,
-                            value: next_target_value,
-                        }),
-                    ) {
-                        old.wait_if_needed(
-                            &mut semaphore_tracker,
-                            queue,
-                            vk::PipelineStageFlags::TRANSFER,
-                            &main,
-                            &transfer,
-                            &compute,
-                            &present,
-                        );
-                    }
-
-                    if let Some(old) = resc_state.set_buffer(
-                        dst.buffer,
-                        copy.dst_array_element,
-                        Some(LatestUsage {
-                            queue,
-                            value: next_target_value,
-                        }),
-                    ) {
-                        old.wait_if_needed(
-                            &mut semaphore_tracker,
-                            queue,
-                            vk::PipelineStageFlags::TRANSFER,
-                            &main,
-                            &transfer,
-                            &compute,
-                            &present,
-                        );
-                    }
 
                     // Perform copy
                     let region = [vk::BufferCopy::builder()
@@ -592,6 +477,12 @@ impl Backend for VulkanBackend {
         }
 
         // Submit to the queue
+        if debug_name.is_some() {
+            if let Some((debug, _)) = &self.debug {
+                debug.cmd_end_debug_utils_label(cb);
+            }
+        }
+
         self.device.end_command_buffer(cb).unwrap();
         match queue {
             QueueType::Main => main,
@@ -601,30 +492,79 @@ impl Backend for VulkanBackend {
         }
         .submit(&self.device, cb, semaphore_tracker)
         .unwrap();
+
+        Job {
+            ty: queue,
+            target_value: next_target_value,
+        }
     }
 
-    unsafe fn synchronize_queue(&self, queue: api::types::QueueType) {
-        todo!()
+    unsafe fn wait_on(&self, job: &Self::Job, timeout: Option<std::time::Duration>) -> JobStatus {
+        let queue = match job.ty {
+            QueueType::Main => self.main.read().unwrap(),
+            QueueType::Transfer => self.transfer.read().unwrap(),
+            QueueType::Compute => self.compute.read().unwrap(),
+            QueueType::Present => self.present.read().unwrap(),
+        };
+
+        // If the queue is up to speed with the job, we can just wait using the API wait
+        if queue.target_timeline_value() == job.target_value {
+            let semaphore = [queue.semaphore()];
+            let value = [job.target_value];
+            let wait = vk::SemaphoreWaitInfo::builder()
+                .semaphores(&semaphore)
+                .values(&value)
+                .build();
+            match self.device.wait_semaphores(
+                &wait,
+                match timeout {
+                    Some(timeout) => timeout.as_millis() as u64,
+                    None => u64::MAX,
+                },
+            ) {
+                Ok(_) => JobStatus::Complete,
+                Err(_) => JobStatus::Running,
+            }
+        }
+        // Otherwise, we have to spin since the timeline value might overshoot the value we
+        // actually want to wait on.
+        else {
+            let start = std::time::Instant::now();
+            let semaphore = queue.semaphore();
+            let timeout = timeout.unwrap_or(std::time::Duration::from_millis(u64::MAX));
+            while self.device.get_semaphore_counter_value(semaphore).unwrap() < job.target_value {
+                if std::time::Instant::now().duration_since(start) > timeout {
+                    return JobStatus::Running;
+                }
+                std::hint::spin_loop();
+            }
+            JobStatus::Complete
+        }
     }
 
-    unsafe fn wait_on(
-        &self,
-        job: &Self::Job,
-        timeout: Option<std::time::Duration>,
-    ) -> api::types::JobStatus {
-        todo!()
+    unsafe fn poll_status(&self, job: &Self::Job) -> JobStatus {
+        let queue = match job.ty {
+            QueueType::Main => self.main.read().unwrap(),
+            QueueType::Transfer => self.transfer.read().unwrap(),
+            QueueType::Compute => self.compute.read().unwrap(),
+            QueueType::Present => self.present.read().unwrap(),
+        };
+        let semaphore = queue.semaphore();
+        if self.device.get_semaphore_counter_value(semaphore).unwrap() >= job.target_value {
+            JobStatus::Complete
+        } else {
+            JobStatus::Running
+        }
     }
 
-    unsafe fn poll_status(&self, job: &Self::Job) -> api::types::JobStatus {
-        todo!()
-    }
-
+    #[inline(always)]
     unsafe fn create_buffer(
         &self,
         create_info: BufferCreateInfo,
     ) -> Result<Self::Buffer, BufferCreateError> {
         Buffer::new(
             &self.device,
+            self.debug.as_ref().map(|(utils, _)| utils),
             self.garbage.sender(),
             &mut self.allocator.lock().unwrap(),
             &self.properties.limits,
@@ -639,26 +579,19 @@ impl Backend for VulkanBackend {
         todo!()
     }
 
+    #[inline(always)]
     unsafe fn create_shader(
         &self,
         create_info: ShaderCreateInfo,
     ) -> Result<Self::Shader, ShaderCreateError> {
-        let code = match bytemuck::try_cast_slice::<u8, u32>(create_info.code) {
-            Ok(code) => code,
-            Err(_) => {
-                return Err(ShaderCreateError::Other(String::from(
-                    "shader code size is not a multiple of 4",
-                )))
-            }
-        };
-        let create_info = vk::ShaderModuleCreateInfo::builder().code(code).build();
-        let module = match self.device.create_shader_module(&create_info, None) {
-            Ok(module) => module,
-            Err(err) => return Err(ShaderCreateError::Other(err.to_string())),
-        };
-        Ok(Shader { module })
+        Shader::new(
+            &self.device,
+            self.debug.as_ref().map(|(utils, _)| utils),
+            create_info,
+        )
     }
 
+    #[inline(always)]
     unsafe fn create_graphics_pipeline(
         &self,
         create_info: GraphicsPipelineCreateInfo<Self>,
@@ -670,42 +603,39 @@ impl Backend for VulkanBackend {
         ))
     }
 
+    #[inline(always)]
+    unsafe fn create_compute_pipeline(
+        &self,
+        create_info: ComputePipelineCreateInfo<Self>,
+    ) -> Result<Self::ComputePipeline, ComputePipelineCreateError> {
+        ComputePipeline::new(
+            &self.device,
+            self.debug.as_ref().map(|(utils, _)| utils),
+            self.garbage.sender(),
+            create_info,
+        )
+    }
+
+    #[inline(always)]
     unsafe fn create_descriptor_set(
         &self,
         create_info: DescriptorSetCreateInfo<Self>,
     ) -> Result<Self::DescriptorSet, DescriptorSetCreateError> {
-        let mut bound = Vec::with_capacity(create_info.layout.internal().descriptor.bindings.len());
-        for binding in &create_info.layout.internal().descriptor.bindings {
-            let mut binds = Vec::with_capacity(binding.count);
-            binds.resize_with(binding.count, || None);
-            bound.push(binds);
-        }
-
-        let mut pools = self.pools.lock().unwrap();
-        let pool = pools.get(
+        DescriptorSet::new(
             &self.device,
-            create_info.layout.internal().descriptor.clone(),
-        );
-        let set = pool.allocate(&self.device);
-        Ok(DescriptorSet {
-            set,
-            layout: pool.layout(),
-            on_drop: self.garbage.sender(),
-            bound,
-        })
+            &mut self.pools.lock().unwrap(),
+            self.garbage.sender(),
+            self.debug.as_ref().map(|(utils, _)| utils),
+            create_info,
+        )
     }
 
+    #[inline(always)]
     unsafe fn create_descriptor_set_layout(
         &self,
         create_info: DescriptorSetLayoutCreateInfo,
     ) -> Result<Self::DescriptorSetLayout, DescriptorSetLayoutCreateError> {
-        // Pre-cache the pool
-        let mut pools = self.pools.lock().unwrap();
-        let pool = pools.get(&self.device, create_info.clone());
-        Ok(DescriptorSetLayout {
-            descriptor: create_info,
-            layout: pool.layout(),
-        })
+        DescriptorSetLayout::new(&self.device, &mut self.pools.lock().unwrap(), create_info)
     }
 
     unsafe fn destroy_buffer(&self, _buffer: &mut Self::Buffer) {
@@ -716,6 +646,7 @@ impl Backend for VulkanBackend {
         todo!()
     }
 
+    #[inline(always)]
     unsafe fn destroy_shader(&self, shader: &mut Self::Shader) {
         self.device.destroy_shader_module(shader.module, None);
     }
@@ -724,57 +655,25 @@ impl Backend for VulkanBackend {
         // Handled in drop
     }
 
-    unsafe fn destroy_descriptor_set(&self, _id: &mut Self::DescriptorSet) {
+    unsafe fn destroy_compute_pipeline(&self, _pipeline: &mut Self::ComputePipeline) {
         // Handled in drop
     }
 
-    unsafe fn destroy_descriptor_set_layout(&self, _id: &mut Self::DescriptorSetLayout) {
+    unsafe fn destroy_descriptor_set(&self, _set: &mut Self::DescriptorSet) {
+        // Handled in drop
+    }
+
+    unsafe fn destroy_descriptor_set_layout(&self, _layout: &mut Self::DescriptorSetLayout) {
         // Not needed
     }
 
+    #[inline(always)]
     unsafe fn map_memory(
         &self,
         id: &mut Self::Buffer,
         idx: usize,
     ) -> Result<(NonNull<u8>, u64), BufferViewError> {
-        // Wait until the last queue that the buffer was used in has finished it's work
-        let mut resc_state = self.resource_state.write().unwrap();
-
-        // NOTE: The reason we set the usage to `None` is because we have to wait for the previous
-        // usage to complete. This implies that no one is using this buffer anymore and thus no
-        // waits are needed further.
-        if let Some(old) = resc_state.set_buffer(id.buffer, idx, None) {
-            let queue = match old.queue {
-                QueueType::Main => self.main.read().unwrap(),
-                QueueType::Transfer => self.transfer.read().unwrap(),
-                QueueType::Compute => self.compute.read().unwrap(),
-                QueueType::Present => self.present.read().unwrap(),
-            };
-
-            // If the queue is up to speed with previous usage, we can just wait using the API wait
-            if queue.target_timeline_value() == old.value {
-                let semaphore = [queue.semaphore()];
-                let value = [old.value];
-                let wait = vk::SemaphoreWaitInfo::builder()
-                    .semaphores(&semaphore)
-                    .values(&value)
-                    .build();
-                self.device.wait_semaphores(&wait, u64::MAX).unwrap();
-            }
-            // Otherwise, we have to spin since the timeline value might overshoot the value we
-            // actually want to wait on.
-            else {
-                let semaphore = queue.semaphore();
-                while self.device.get_semaphore_counter_value(semaphore).unwrap() < old.value {
-                    std::hint::spin_loop();
-                }
-            }
-        }
-
-        let map = id.block.mapped_ptr().unwrap();
-        let map =
-            NonNull::new_unchecked((map.as_ptr() as *mut u8).add(id.aligned_size as usize * idx));
-        Ok((map, id.size))
+        id.map(self, idx)
     }
 
     unsafe fn unmap_memory(&self, _id: &mut Self::Buffer) {
@@ -782,115 +681,21 @@ impl Backend for VulkanBackend {
     }
 
     unsafe fn flush_range(&self, _id: &mut Self::Buffer, _idx: usize) {
-        // Not needed because HOST_COHERENT
+        // Not needed because `HOST_COHERENT`
     }
 
     unsafe fn invalidate_range(&self, _id: &mut Self::Buffer, _idx: usize) {
-        // Not needed because HOST_COHERENT
+        // Not needed because `HOST_COHERENT`
     }
 
+    #[inline(always)]
     unsafe fn update_descriptor_sets(
         &self,
         set: &mut Self::DescriptorSet,
         layout: &Self::DescriptorSetLayout,
         updates: &[DescriptorSetUpdate<Self>],
     ) {
-        let mut writes = Vec::with_capacity(updates.len());
-        let mut buffers = Vec::with_capacity(updates.len());
-
-        for update in updates {
-            set.bound[update.binding as usize][update.array_element] = Some({
-                let binding = layout.get_binding(update.binding).unwrap();
-                let access = match binding.ty {
-                    DescriptorType::Texture => vk::AccessFlags::SHADER_READ,
-                    DescriptorType::UniformBuffer => vk::AccessFlags::UNIFORM_READ,
-                    DescriptorType::StorageBuffer(ty) => match ty {
-                        AccessType::Read => vk::AccessFlags::SHADER_READ,
-                        AccessType::ReadWrite => {
-                            vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE
-                        }
-                    },
-                };
-                let stage = match binding.stage {
-                    ShaderStage::Vertex => vk::PipelineStageFlags::VERTEX_SHADER,
-                    ShaderStage::Fragment => vk::PipelineStageFlags::FRAGMENT_SHADER,
-                    ShaderStage::Compute => vk::PipelineStageFlags::COMPUTE_SHADER,
-                    ShaderStage::AllGraphics => vk::PipelineStageFlags::ALL_GRAPHICS,
-                };
-
-                match &update.value {
-                    DescriptorValue::UniformBuffer {
-                        buffer,
-                        array_element,
-                    } => {
-                        let buffer = buffer.internal();
-                        buffers.push(
-                            vk::DescriptorBufferInfo::builder()
-                                .buffer(buffer.buffer)
-                                .offset(buffer.aligned_size * (*array_element) as u64)
-                                .range(buffer.aligned_size)
-                                .build(),
-                        );
-
-                        writes.push(
-                            vk::WriteDescriptorSet::builder()
-                                .dst_set(set.set)
-                                .dst_binding(update.binding)
-                                .dst_array_element(update.array_element as u32)
-                                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                                .buffer_info(&buffers[buffers.len() - 1..])
-                                .build(),
-                        );
-
-                        Binding {
-                            access,
-                            stage,
-                            value: BoundValue::UniformBuffer {
-                                ref_counter: buffer.ref_counter.clone(),
-                                buffer: buffer.buffer,
-                                array_element: *array_element,
-                            },
-                        }
-                    }
-                    DescriptorValue::StorageBuffer {
-                        buffer,
-                        array_element,
-                    } => {
-                        let buffer = buffer.internal();
-                        buffers.push(
-                            vk::DescriptorBufferInfo::builder()
-                                .buffer(buffer.buffer)
-                                .offset(buffer.aligned_size * (*array_element) as u64)
-                                .range(buffer.aligned_size)
-                                .build(),
-                        );
-
-                        writes.push(
-                            vk::WriteDescriptorSet::builder()
-                                .dst_set(set.set)
-                                .dst_binding(update.binding)
-                                .dst_array_element(update.array_element as u32)
-                                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                                .buffer_info(&buffers[buffers.len() - 1..])
-                                .build(),
-                        );
-
-                        Binding {
-                            access,
-                            stage,
-                            value: BoundValue::StorageBuffer {
-                                ref_counter: buffer.ref_counter.clone(),
-                                buffer: buffer.buffer,
-                                array_element: *array_element,
-                            },
-                        }
-                    }
-                    DescriptorValue::Texture => todo!(),
-                }
-            });
-        }
-
-        self.device.update_descriptor_sets(&writes, &[]);
+        set.update(&self.device, layout, updates);
     }
 }
 
@@ -1093,6 +898,7 @@ impl VulkanBackend {
         let main = unsafe {
             VkQueue::new(
                 &device,
+                debug.as_ref().map(|(utils, _)| utils),
                 device.get_device_queue(pd_query.queue_family_indices.main, queue_indices.0 as u32),
                 QueueType::Main,
                 pd_query.queue_family_indices.main,
@@ -1102,6 +908,7 @@ impl VulkanBackend {
         let transfer = unsafe {
             VkQueue::new(
                 &device,
+                debug.as_ref().map(|(utils, _)| utils),
                 device.get_device_queue(
                     pd_query.queue_family_indices.transfer,
                     queue_indices.1 as u32,
@@ -1114,6 +921,7 @@ impl VulkanBackend {
         let present = unsafe {
             VkQueue::new(
                 &device,
+                debug.as_ref().map(|(utils, _)| utils),
                 device.get_device_queue(
                     pd_query.queue_family_indices.present,
                     queue_indices.2 as u32,
@@ -1126,6 +934,7 @@ impl VulkanBackend {
         let compute = unsafe {
             VkQueue::new(
                 &device,
+                debug.as_ref().map(|(utils, _)| utils),
                 device.get_device_queue(
                     pd_query.queue_family_indices.compute,
                     queue_indices.3 as u32,
@@ -1186,6 +995,7 @@ impl Drop for VulkanBackend {
             let mut pools = self.pools.lock().unwrap();
             self.garbage
                 .cleanup(&self.device, &mut allocator, &mut pools, current, target);
+            self.pools.lock().unwrap().release(&self.device);
             std::mem::drop(allocator);
             std::mem::drop(ManuallyDrop::take(&mut self.allocator));
             self.framebuffers.release(&self.device);
@@ -1421,86 +1231,6 @@ fn device_type_rank(ty: vk::PhysicalDeviceType) -> u32 {
         vk::PhysicalDeviceType::CPU => 2,
         vk::PhysicalDeviceType::VIRTUAL_GPU => 1,
         _ => 0,
-    }
-}
-
-/// Given a slice of commands, loops until we find an `EndRenderPass` command and records all
-/// render pass dependent resources.
-unsafe fn find_render_pass_resources(
-    descriptor: &RenderPassDescriptor<'_, crate::VulkanBackend>,
-    commands: &[Command<'_, crate::VulkanBackend>],
-    device: &ash::Device,
-    command_buffer: vk::CommandBuffer,
-    tracker: &mut PipelineTracker,
-) {
-    let mut buffers = Vec::default();
-    let mut images = Vec::with_capacity(descriptor.color_attachments.len());
-
-    // Handle images
-    for attachment in &descriptor.color_attachments {
-        let image = match attachment.source {
-            ColorAttachmentSource::SurfaceImage(image) => image.internal().image(),
-        };
-        images.push((
-            image,
-            ResourceUsage {
-                used: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                access: vk::AccessFlags::COLOR_ATTACHMENT_WRITE
-                    | vk::AccessFlags::COLOR_ATTACHMENT_READ,
-            },
-        ));
-    }
-
-    // Handle vertex/index buffers
-    for command in commands {
-        match command {
-            Command::BindVertexBuffers { binds, .. } => {
-                for bind in binds {
-                    buffers.push((
-                        bind.buffer.internal().buffer,
-                        ResourceUsage {
-                            used: vk::PipelineStageFlags::VERTEX_INPUT,
-                            access: vk::AccessFlags::VERTEX_ATTRIBUTE_READ,
-                        },
-                    ));
-                }
-            }
-            Command::BindIndexBuffer { buffer, .. } => buffers.push((
-                buffer.internal().buffer,
-                ResourceUsage {
-                    used: vk::PipelineStageFlags::VERTEX_INPUT,
-                    access: vk::AccessFlags::INDEX_READ,
-                },
-            )),
-            Command::BindDescriptorSets { sets, .. } => {
-                for set in sets {
-                    for binding in &set.internal().bound {
-                        for elem in binding {
-                            if let Some(elem) = elem {
-                                let usage = ResourceUsage {
-                                    used: elem.stage,
-                                    access: elem.access,
-                                };
-                                match &elem.value {
-                                    BoundValue::UniformBuffer { buffer, .. } => {
-                                        buffers.push((*buffer, usage))
-                                    }
-                                    BoundValue::StorageBuffer { buffer, .. } => {
-                                        buffers.push((*buffer, usage))
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            Command::EndRenderPass => break,
-            _ => {}
-        }
-    }
-
-    if let Some(barrier) = tracker.update(&buffers, &images) {
-        barrier.execute(device, command_buffer);
     }
 }
 

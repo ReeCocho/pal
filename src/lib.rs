@@ -10,12 +10,17 @@ pub mod prelude {
     // Surface
     pub type Surface = api::surface::Surface<crate::Backend>;
     pub type SurfaceImage = api::surface::SurfaceImage<crate::Backend>;
-    pub use api::surface::{SurfaceConfiguration, SurfaceCreateError, SurfaceCreateInfo};
+    pub use api::surface::{
+        SurfaceConfiguration, SurfaceCreateError, SurfaceCreateInfo, SurfacePresentSuccess,
+    };
 
     // Render pass
     pub use api::render_pass::{
-        ColorAttachment, ColorAttachmentSource, RenderPass, RenderPassDescriptor,
+        ColorAttachment, ColorAttachmentSource, RenderPass, RenderPassDescriptor, VertexBind,
     };
+
+    // Command buffer
+    pub use api::command_buffer::CopyBufferToBuffer;
 
     // Queue
     pub type Queue = api::queue::Queue<crate::Backend>;
@@ -31,6 +36,10 @@ pub mod prelude {
         GraphicsPipelineCreateInfo, RasterizationState, ShaderStages, VertexInputAttribute,
         VertexInputBinding, VertexInputState,
     };
+
+    // Compute pipeline
+    pub type ComputePipeline = api::compute_pipeline::ComputePipeline<crate::Backend>;
+    pub use api::compute_pipeline::{ComputePipelineCreateError, ComputePipelineCreateInfo};
 
     // Buffer
     pub type Buffer = api::buffer::Buffer<crate::Backend>;

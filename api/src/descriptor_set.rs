@@ -10,6 +10,7 @@ use crate::{
 
 pub struct DescriptorSetCreateInfo<B: Backend> {
     pub layout: DescriptorSetLayout<B>,
+    pub debug_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]

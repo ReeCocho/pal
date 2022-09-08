@@ -7,6 +7,7 @@ pub mod garbage_collector;
 pub mod pipeline_tracker;
 pub mod resource_state;
 pub mod semaphores;
+pub mod tracking;
 
 #[inline(always)]
 pub(crate) fn rank_pipeline_stage(stage: vk::PipelineStageFlags) -> u32 {

@@ -8,6 +8,7 @@ pub struct BufferCreateInfo {
     pub array_elements: usize,
     pub buffer_usage: BufferUsage,
     pub memory_usage: MemoryUsage,
+    pub debug_name: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -52,12 +53,17 @@ impl<B: Backend> Buffer<B> {
         Ok(Self { ctx, id, size })
     }
 
-    pub fn new_staging(ctx: Context<B>, data: &[u8]) -> Result<Buffer<B>, BufferCreateError> {
+    pub fn new_staging(
+        ctx: Context<B>,
+        debug_name: Option<String>,
+        data: &[u8],
+    ) -> Result<Buffer<B>, BufferCreateError> {
         let create_info = BufferCreateInfo {
             size: data.len() as u64,
             array_elements: 1,
             buffer_usage: BufferUsage::TRANSFER_SRC,
             memory_usage: MemoryUsage::CpuToGpu,
+            debug_name,
         };
         let mut buffer = Buffer::new(ctx, create_info)?;
         let mut view = buffer.write(0).unwrap();

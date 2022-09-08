@@ -15,7 +15,7 @@ pub struct Queue<B: Backend> {
 
 pub struct Job<B: Backend> {
     ctx: Context<B>,
-    job: B::Job,
+    id: B::Job,
 }
 
 pub enum SurfacePresentFailure {
@@ -35,13 +35,20 @@ impl<B: Backend> Queue<B> {
     }
 
     #[inline(always)]
-    pub fn submit<'a>(&self, commands: impl FnOnce(&mut CommandBuffer<'a, B>)) {
+    pub fn submit<'a>(
+        &self,
+        debug_name: Option<&str>,
+        commands: impl FnOnce(&mut CommandBuffer<'a, B>),
+    ) -> Job<B> {
         let mut cb = CommandBuffer {
             commands: Vec::default(),
         };
         commands(&mut cb);
-        unsafe {
-            self.ctx.0.submit_commands(self.ty, cb.commands);
+        let id = unsafe { self.ctx.0.submit_commands(self.ty, debug_name, cb.commands) };
+
+        Job {
+            id,
+            ctx: self.ctx.clone(),
         }
     }
 
@@ -70,12 +77,12 @@ impl<B: Backend> Job<B> {
     /// job by the time the timeout is reached.
     #[inline(always)]
     fn wait_on(&self, timeout: Option<Duration>) -> JobStatus {
-        unsafe { self.ctx.0.wait_on(&self.job, timeout) }
+        unsafe { self.ctx.0.wait_on(&self.id, timeout) }
     }
 
     /// Polls the current status of the job without blocking.
     #[inline(always)]
     fn poll_status(&self) -> JobStatus {
-        unsafe { self.ctx.0.poll_status(&self.job) }
+        unsafe { self.ctx.0.poll_status(&self.id) }
     }
 }

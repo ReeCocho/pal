@@ -1,7 +1,17 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::{
+    ffi::CString,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
-use api::surface::{SurfaceConfiguration, SurfaceImageAcquireError, SurfaceUpdateError};
-use ash::vk;
+use api::{
+    queue::SurfacePresentFailure,
+    surface::{
+        SurfaceConfiguration, SurfaceCreateError, SurfaceCreateInfo, SurfaceImageAcquireError,
+        SurfacePresentSuccess, SurfaceUpdateError,
+    },
+};
+use ash::vk::{self, Handle};
+use raw_window_handle::HasRawWindowHandle;
 
 use crate::VulkanBackend;
 
@@ -19,6 +29,7 @@ pub struct Surface {
     pub(crate) next_semaphore: usize,
     /// Counter for the number of images acquired.
     pub(crate) images_acquired: usize,
+    debug_name: Option<String>,
 }
 
 pub struct SurfaceImage {
@@ -49,6 +60,88 @@ pub(crate) struct SurfaceImageSemaphores {
 }
 
 impl Surface {
+    pub(crate) unsafe fn new<W: HasRawWindowHandle>(
+        ctx: &VulkanBackend,
+        create_info: SurfaceCreateInfo<'_, W>,
+    ) -> Result<Self, SurfaceCreateError> {
+        // Create and name the surface
+        let surface =
+            match ash_window::create_surface(&ctx.entry, &ctx.instance, create_info.window, None) {
+                Ok(surface) => surface,
+                Err(err) => return Err(SurfaceCreateError::Other(err.to_string())),
+            };
+
+        if let Some(name) = &create_info.debug_name {
+            if let Some((debug, _)) = &ctx.debug {
+                let name = CString::new(name.as_str()).unwrap();
+                let name_info = vk::DebugUtilsObjectNameInfoEXT::builder()
+                    .object_type(vk::ObjectType::SURFACE_KHR)
+                    .object_handle(surface.as_raw())
+                    .object_name(&name)
+                    .build();
+
+                debug
+                    .debug_utils_set_object_name(ctx.device.handle(), &name_info)
+                    .unwrap();
+            }
+        }
+
+        let mut surface = Surface {
+            surface,
+            swapchain: vk::SwapchainKHR::null(),
+            format: vk::SurfaceFormatKHR::default(),
+            resolution: vk::Extent2D::default(),
+            images: Vec::default(),
+            semaphores: Vec::default(),
+            next_semaphore: 0,
+            images_acquired: 0,
+            debug_name: create_info.debug_name,
+        };
+
+        // Update the surface with the provided configuration
+        if let Err(err) = surface.update_config(ctx, create_info.config) {
+            return Err(SurfaceCreateError::BadConfig(err));
+        }
+
+        Ok(surface)
+    }
+
+    pub(crate) unsafe fn present(
+        &self,
+        image: &mut SurfaceImage,
+        swapchain_loader: &ash::extensions::khr::Swapchain,
+        queue: vk::Queue,
+    ) -> Result<SurfacePresentSuccess, SurfacePresentFailure> {
+        if image.surface() != self.surface {
+            return Err(SurfacePresentFailure::BadImage);
+        }
+
+        if !image.is_signaled() {
+            return Err(SurfacePresentFailure::NoRender);
+        }
+
+        // Present
+        let invalidated = {
+            let idx = [image.index() as u32];
+            let swapchain = [self.swapchain];
+            let presentable = [image.semaphores().presentable];
+            let present_info = vk::PresentInfoKHR::builder()
+                .image_indices(&idx)
+                .swapchains(&swapchain)
+                .wait_semaphores(&presentable)
+                .build();
+            swapchain_loader
+                .queue_present(queue, &present_info)
+                .unwrap_or(true)
+        };
+
+        if invalidated {
+            Ok(SurfacePresentSuccess::Invalidated)
+        } else {
+            Ok(SurfacePresentSuccess::Ok)
+        }
+    }
+
     pub(crate) unsafe fn update_config(
         &mut self,
         ctx: &VulkanBackend,
@@ -230,12 +323,66 @@ impl Surface {
             height: surface_resolution.height,
         };
 
-        Ok(())
-    }
+        // Name everything
+        if let Some(name) = &self.debug_name {
+            if let Some((debug, _)) = &ctx.debug {
+                let swapchain_name = CString::new(format!("{}_swapchain", name)).unwrap();
+                let swapchain_name_info = vk::DebugUtilsObjectNameInfoEXT::builder()
+                    .object_type(vk::ObjectType::SWAPCHAIN_KHR)
+                    .object_handle(self.swapchain.as_raw())
+                    .object_name(&swapchain_name)
+                    .build();
+                debug
+                    .debug_utils_set_object_name(ctx.device.handle(), &swapchain_name_info)
+                    .unwrap();
 
-    #[inline]
-    pub(crate) fn dimensions(&self) -> (u32, u32) {
-        (self.resolution.width, self.resolution.height)
+                for (i, (image, view)) in self.images.iter().enumerate() {
+                    let image_name = CString::new(format!("{}_image_{}", name, i)).unwrap();
+                    let view_name = CString::new(format!("{}_view_{}", name, i)).unwrap();
+                    let image_name_info = vk::DebugUtilsObjectNameInfoEXT::builder()
+                        .object_type(vk::ObjectType::IMAGE)
+                        .object_handle(image.as_raw())
+                        .object_name(&image_name)
+                        .build();
+                    let view_name_info = vk::DebugUtilsObjectNameInfoEXT::builder()
+                        .object_type(vk::ObjectType::IMAGE_VIEW)
+                        .object_handle(view.as_raw())
+                        .object_name(&view_name)
+                        .build();
+                    debug
+                        .debug_utils_set_object_name(ctx.device.handle(), &image_name_info)
+                        .unwrap();
+                    debug
+                        .debug_utils_set_object_name(ctx.device.handle(), &view_name_info)
+                        .unwrap();
+                }
+
+                for (i, semaphores) in self.semaphores.iter().enumerate() {
+                    let available_name =
+                        CString::new(format!("{}_available_semaphore_{}", name, i)).unwrap();
+                    let presentable_name =
+                        CString::new(format!("{}_presentable_semaphore_{}", name, i)).unwrap();
+                    let available_name_info = vk::DebugUtilsObjectNameInfoEXT::builder()
+                        .object_type(vk::ObjectType::SEMAPHORE)
+                        .object_handle(semaphores.available.as_raw())
+                        .object_name(&available_name)
+                        .build();
+                    let presentable_name_info = vk::DebugUtilsObjectNameInfoEXT::builder()
+                        .object_type(vk::ObjectType::SEMAPHORE)
+                        .object_handle(semaphores.presentable.as_raw())
+                        .object_name(&presentable_name)
+                        .build();
+                    debug
+                        .debug_utils_set_object_name(ctx.device.handle(), &available_name_info)
+                        .unwrap();
+                    debug
+                        .debug_utils_set_object_name(ctx.device.handle(), &presentable_name_info)
+                        .unwrap();
+                }
+            }
+        }
+
+        Ok(())
     }
 
     pub(crate) unsafe fn acquire_image(

@@ -14,6 +14,7 @@ pub struct SurfaceCreateInfo<'a, W: HasRawWindowHandle> {
     pub config: SurfaceConfiguration,
     /// Raw window handle used by whatever windowing API you choose.
     pub window: &'a W,
+    pub debug_name: Option<String>,
 }
 
 pub struct SurfaceConfiguration {
@@ -25,6 +26,7 @@ pub struct SurfaceConfiguration {
 
 pub struct Surface<B: Backend> {
     ctx: Context<B>,
+    dims: (u32, u32),
     pub(crate) id: B::Surface,
 }
 
@@ -79,8 +81,9 @@ impl<B: Backend> Surface<B> {
         ctx: Context<B>,
         create_info: SurfaceCreateInfo<'a, W>,
     ) -> Result<Self, SurfaceCreateError> {
+        let dims = (create_info.config.width, create_info.config.height);
         let id = unsafe { ctx.0.create_surface(create_info)? };
-        Ok(Self { ctx, id })
+        Ok(Self { ctx, id, dims })
     }
 
     #[inline(always)]
@@ -90,7 +93,7 @@ impl<B: Backend> Surface<B> {
 
     #[inline(always)]
     pub fn dimensions(&self) -> (u32, u32) {
-        unsafe { self.ctx.0.surface_dimensions(&self.id) }
+        self.dims
     }
 
     /// Update the configuration of the surface.
@@ -101,7 +104,10 @@ impl<B: Backend> Surface<B> {
         &mut self,
         config: SurfaceConfiguration,
     ) -> Result<(), SurfaceUpdateError> {
-        unsafe { self.ctx.0.update_surface(&mut self.id, config) }
+        let new_dims = (config.width, config.height);
+        let res = unsafe { self.ctx.0.update_surface(&mut self.id, config)? };
+        self.dims = new_dims;
+        Ok(res)
     }
 
     /// Acquire a new image from the surface to present.

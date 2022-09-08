@@ -16,6 +16,14 @@ fn main() {
         Path::new("./examples/shaders/uniform_buffer.vert"),
         Path::new("./examples/shaders/"),
     );
+    compile(
+        Path::new("./examples/shaders/vertex_compute.comp"),
+        Path::new("./examples/shaders/"),
+    );
+    compile(
+        Path::new("./examples/shaders/index_compute.comp"),
+        Path::new("./examples/shaders/"),
+    );
 }
 
 fn compile(in_path: &Path, out_path: &Path) {

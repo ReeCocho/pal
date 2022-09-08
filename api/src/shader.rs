@@ -5,6 +5,7 @@ use thiserror::Error;
 
 pub struct ShaderCreateInfo<'a> {
     pub code: &'a [u8],
+    pub debug_name: Option<String>,
 }
 
 #[derive(Debug, Error)]

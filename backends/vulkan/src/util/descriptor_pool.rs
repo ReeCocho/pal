@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, ffi::CString};
 
 use api::descriptor_set::DescriptorSetLayoutCreateInfo;
-use ash::vk;
+use ash::vk::{self, Handle};
 
 /// Default number of sets per pool.
 const SETS_PER_POOL: usize = 16;
@@ -123,30 +123,54 @@ impl DescriptorPool {
         self.free.push(set);
     }
 
-    pub unsafe fn allocate(&mut self, device: &ash::Device) -> vk::DescriptorSet {
-        if let Some(free) = self.free.pop() {
-            return free;
-        }
+    pub unsafe fn allocate(
+        &mut self,
+        device: &ash::Device,
+        debug: Option<&ash::extensions::ext::DebugUtils>,
+        name: Option<String>,
+    ) -> vk::DescriptorSet {
+        let set = match self.free.pop() {
+            Some(free) => free,
+            None => {
+                // Allocate a new pool if required
+                if self.size == 0 {
+                    self.size = SETS_PER_POOL;
+                    self.pools.push({
+                        let create_info = vk::DescriptorPoolCreateInfo::builder()
+                            .max_sets(self.size as u32)
+                            .pool_sizes(&self.sizes)
+                            .build();
+                        device.create_descriptor_pool(&create_info, None).unwrap()
+                    });
+                }
 
-        // Allocate a new pool if required
-        if self.size == 0 {
-            self.size = SETS_PER_POOL;
-            self.pools.push({
-                let create_info = vk::DescriptorPoolCreateInfo::builder()
-                    .max_sets(self.size as u32)
-                    .pool_sizes(&self.sizes)
+                // Allocate new set
+                self.size -= 1;
+                let alloc_info = vk::DescriptorSetAllocateInfo::builder()
+                    .descriptor_pool(*self.pools.last().unwrap())
+                    .set_layouts(&self.layout)
                     .build();
-                device.create_descriptor_pool(&create_info, None).unwrap()
-            });
+                device.allocate_descriptor_sets(&alloc_info).unwrap()[0]
+            }
+        };
+
+        // Name the set if needed
+        if let Some(name) = name {
+            if let Some(debug) = debug {
+                let name = CString::new(name).unwrap();
+                let name_info = vk::DebugUtilsObjectNameInfoEXT::builder()
+                    .object_type(vk::ObjectType::DESCRIPTOR_SET)
+                    .object_handle(set.as_raw())
+                    .object_name(&name)
+                    .build();
+
+                debug
+                    .debug_utils_set_object_name(device.handle(), &name_info)
+                    .unwrap();
+            }
         }
 
-        // Allocate new set
-        self.size -= 1;
-        let alloc_info = vk::DescriptorSetAllocateInfo::builder()
-            .descriptor_pool(*self.pools.last().unwrap())
-            .set_layouts(&self.layout)
-            .build();
-        device.allocate_descriptor_sets(&alloc_info).unwrap()[0]
+        set
     }
 
     pub unsafe fn release(&mut self, device: &ash::Device) {

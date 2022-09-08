@@ -1,14 +1,15 @@
-use std::{mem::ManuallyDrop, sync::Arc};
+use std::{ffi::CString, mem::ManuallyDrop, ptr::NonNull, sync::Arc};
 
 use api::{
-    buffer::{BufferCreateError, BufferCreateInfo},
+    buffer::{BufferCreateError, BufferCreateInfo, BufferViewError},
     types::{BufferUsage, MemoryUsage},
+    Backend,
 };
-use ash::vk;
+use ash::vk::{self, Handle};
 use crossbeam_channel::Sender;
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, Allocator};
 
-use crate::util::garbage_collector::Garbage;
+use crate::{job::Job, util::garbage_collector::Garbage, VulkanBackend};
 
 pub struct Buffer {
     pub(crate) buffer: vk::Buffer,
@@ -30,6 +31,7 @@ pub(crate) struct BufferRefCounter(Arc<()>);
 impl Buffer {
     pub(crate) unsafe fn new(
         device: &ash::Device,
+        debug: Option<&ash::extensions::ext::DebugUtils>,
         on_drop: Sender<Garbage>,
         allocator: &mut Allocator,
         limits: &vk::PhysicalDeviceLimits,
@@ -96,6 +98,22 @@ impl Buffer {
             return Err(BufferCreateError::Other(err.to_string()));
         }
 
+        // Setup debug name is requested
+        if let Some(name) = create_info.debug_name {
+            if let Some(debug) = debug {
+                let name = CString::new(name).unwrap();
+                let name_info = vk::DebugUtilsObjectNameInfoEXT::builder()
+                    .object_type(vk::ObjectType::BUFFER)
+                    .object_handle(buffer.as_raw())
+                    .object_name(&name)
+                    .build();
+
+                debug
+                    .debug_utils_set_object_name(device.handle(), &name_info)
+                    .unwrap();
+            }
+        }
+
         Ok(Buffer {
             buffer,
             block: ManuallyDrop::new(block),
@@ -107,6 +125,33 @@ impl Buffer {
             on_drop,
             ref_counter: BufferRefCounter::default(),
         })
+    }
+
+    pub(crate) unsafe fn map(
+        &self,
+        ctx: &VulkanBackend,
+        idx: usize,
+    ) -> Result<(NonNull<u8>, u64), BufferViewError> {
+        // Wait until the last queue that the buffer was used in has finished it's work
+        let mut resc_state = ctx.resource_state.write().unwrap();
+
+        // NOTE: The reason we set the usage to `None` is because we have to wait for the previous
+        // usage to complete. This implies that no one is using this buffer anymore and thus no
+        // waits are further needed.
+        if let Some(old) = resc_state.set_buffer(self.buffer, idx, None) {
+            ctx.wait_on(
+                &Job {
+                    ty: old.queue,
+                    target_value: old.value,
+                },
+                None,
+            );
+        }
+
+        let map = self.block.mapped_ptr().unwrap();
+        let map =
+            NonNull::new_unchecked((map.as_ptr() as *mut u8).add(self.aligned_size as usize * idx));
+        Ok((map, self.size))
     }
 }
 

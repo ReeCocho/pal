@@ -1,5 +1,7 @@
 pub mod buffer;
 pub mod command_buffer;
+pub mod compute_pass;
+pub mod compute_pipeline;
 pub mod context;
 pub mod descriptor_set;
 pub mod graphics_pipeline;
@@ -14,6 +16,7 @@ use std::{ptr::NonNull, time::Duration};
 
 use buffer::{BufferCreateError, BufferCreateInfo, BufferViewError};
 use command_buffer::Command;
+use compute_pipeline::{ComputePipelineCreateError, ComputePipelineCreateInfo};
 use descriptor_set::{
     DescriptorSetCreateError, DescriptorSetCreateInfo, DescriptorSetLayoutCreateError,
     DescriptorSetLayoutCreateInfo, DescriptorSetUpdate,
@@ -36,6 +39,7 @@ pub trait Backend: Sized + 'static {
     type SurfaceImage;
     type Shader;
     type GraphicsPipeline;
+    type ComputePipeline;
     type DescriptorSetLayout;
     type DescriptorSet;
     type Job;
@@ -45,7 +49,6 @@ pub trait Backend: Sized + 'static {
         create_info: SurfaceCreateInfo<'a, W>,
     ) -> Result<Self::Surface, SurfaceCreateError>;
     unsafe fn destroy_surface(&self, id: &mut Self::Surface);
-    unsafe fn surface_dimensions(&self, id: &Self::Surface) -> (u32, u32);
     unsafe fn update_surface(
         &self,
         id: &mut Self::Surface,
@@ -57,8 +60,12 @@ pub trait Backend: Sized + 'static {
     ) -> Result<Self::SurfaceImage, SurfaceImageAcquireError>;
     unsafe fn destroy_surface_image(&self, id: &mut Self::SurfaceImage);
 
-    unsafe fn submit_commands<'a>(&self, queue: QueueType, commands: Vec<Command<'a, Self>>);
-    unsafe fn synchronize_queue(&self, queue: QueueType);
+    unsafe fn submit_commands<'a>(
+        &self,
+        queue: QueueType,
+        debug_name: Option<&str>,
+        commands: Vec<Command<'a, Self>>,
+    ) -> Self::Job;
     unsafe fn present_image(
         &self,
         surface: &Self::Surface,
@@ -80,6 +87,10 @@ pub trait Backend: Sized + 'static {
         &self,
         create_info: GraphicsPipelineCreateInfo<Self>,
     ) -> Result<Self::GraphicsPipeline, GraphicsPipelineCreateError>;
+    unsafe fn create_compute_pipeline(
+        &self,
+        create_info: ComputePipelineCreateInfo<Self>,
+    ) -> Result<Self::ComputePipeline, ComputePipelineCreateError>;
     unsafe fn create_descriptor_set(
         &self,
         create_info: DescriptorSetCreateInfo<Self>,
@@ -92,6 +103,7 @@ pub trait Backend: Sized + 'static {
     unsafe fn destroy_texture(&self, id: &mut Self::Texture);
     unsafe fn destroy_shader(&self, id: &mut Self::Shader);
     unsafe fn destroy_graphics_pipeline(&self, id: &mut Self::GraphicsPipeline);
+    unsafe fn destroy_compute_pipeline(&self, id: &mut Self::ComputePipeline);
     unsafe fn destroy_descriptor_set(&self, id: &mut Self::DescriptorSet);
     unsafe fn destroy_descriptor_set_layout(&self, id: &mut Self::DescriptorSetLayout);
 

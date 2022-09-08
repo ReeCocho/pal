@@ -4,7 +4,7 @@ use crate::{
     descriptor_set::DescriptorSet,
     graphics_pipeline::GraphicsPipeline,
     surface::SurfaceImage,
-    types::{IndexType, LoadOp, StoreOp},
+    types::{IndexType, LoadOp, ShaderStage, StoreOp},
     Backend,
 };
 
@@ -40,8 +40,11 @@ impl<'a, B: Backend> RenderPass<'a, B> {
 
     #[inline]
     pub fn bind_sets(&mut self, first: usize, sets: Vec<&'a DescriptorSet<B>>) {
-        self.commands
-            .push(Command::BindDescriptorSets { sets, first });
+        self.commands.push(Command::BindDescriptorSets {
+            sets,
+            first,
+            stage: ShaderStage::AllGraphics,
+        });
     }
 
     #[inline]

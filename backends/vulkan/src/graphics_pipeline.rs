@@ -1,7 +1,7 @@
 use api::graphics_pipeline::GraphicsPipelineCreateInfo;
-use ash::vk;
+use ash::vk::{self, Handle};
 use crossbeam_channel::Sender;
-use std::{collections::HashMap, sync::Mutex};
+use std::{collections::HashMap, ffi::CString, sync::Mutex};
 
 use crate::util::garbage_collector::Garbage;
 
@@ -48,6 +48,7 @@ impl GraphicsPipeline {
     pub(crate) unsafe fn get(
         &self,
         device: &ash::Device,
+        debug: Option<&ash::extensions::ext::DebugUtils>,
         render_pass: vk::RenderPass,
     ) -> vk::Pipeline {
         let mut pipelines = self.pipelines.lock().unwrap();
@@ -231,6 +232,22 @@ impl GraphicsPipeline {
         let pipeline = device
             .create_graphics_pipelines(vk::PipelineCache::null(), &create_info, None)
             .unwrap()[0];
+
+        // Name the pipeline if requested
+        if let Some(name) = &self.descriptor.debug_name {
+            if let Some(debug) = debug {
+                let name = CString::new(format!("{}_{}", name.as_str(), pipelines.len())).unwrap();
+                let name_info = vk::DebugUtilsObjectNameInfoEXT::builder()
+                    .object_type(vk::ObjectType::PIPELINE)
+                    .object_handle(pipeline.as_raw())
+                    .object_name(&name)
+                    .build();
+
+                debug
+                    .debug_utils_set_object_name(device.handle(), &name_info)
+                    .unwrap();
+            }
+        }
 
         pipelines.insert(render_pass, pipeline);
         pipeline

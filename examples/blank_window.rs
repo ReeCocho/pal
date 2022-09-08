@@ -1,3 +1,4 @@
+/// This example demonstrates how to create a blank window and explains all of the objects used.
 use api::surface::SurfacePresentSuccess;
 use pal::prelude::*;
 use vulkan::{VulkanBackend, VulkanBackendCreateInfo};
@@ -12,7 +13,7 @@ fn main() {
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
         .with_title("Blank Window")
-        .with_inner_size(PhysicalSize::new(1270, 720))
+        .with_inner_size(PhysicalSize::new(1280, 720))
         .build(&event_loop)
         .unwrap();
 
@@ -40,6 +41,7 @@ fn main() {
                 format: TextureFormat::Bgra8Unorm,
             },
             window: &window,
+            debug_name: Some(String::from("surface")),
         },
     )
     .unwrap();
@@ -64,7 +66,7 @@ fn main() {
                 let surface_image = surface.acquire_image().unwrap();
 
                 // Then we acquire a command buffer from our main queue which supports graphics
-                context.main().submit(|command_buffer| {
+                context.main().submit(Some("main_pass"), |command_buffer| {
                     // Begin a render pass to clear the surface image
                     command_buffer.render_pass(
                         RenderPassDescriptor {
