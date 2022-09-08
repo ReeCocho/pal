@@ -108,8 +108,9 @@ impl ComputePipeline {
 
 impl Drop for ComputePipeline {
     fn drop(&mut self) {
+        self.garbage.send(Garbage::Pipeline(self.pipeline)).unwrap();
         self.garbage
-            .send(Garbage::Pipeline(vec![self.pipeline], self.layout))
+            .send(Garbage::PipelineLayout(self.layout))
             .unwrap();
     }
 }

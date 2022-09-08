@@ -6,7 +6,7 @@ use gpu_allocator::vulkan::{Allocation, Allocator};
 
 use crate::buffer::BufferRefCounter;
 
-use super::descriptor_pool::DescriptorPools;
+use super::{descriptor_pool::DescriptorPools, pipeline_cache::PipelineCache};
 
 pub(crate) struct GarbageCollector {
     sender: Sender<Garbage>,
@@ -15,7 +15,8 @@ pub(crate) struct GarbageCollector {
 }
 
 pub(crate) enum Garbage {
-    Pipeline(Vec<vk::Pipeline>, vk::PipelineLayout),
+    PipelineLayout(vk::PipelineLayout),
+    Pipeline(vk::Pipeline),
     Buffer {
         buffer: vk::Buffer,
         allocation: Allocation,
@@ -58,6 +59,7 @@ impl GarbageCollector {
         device: &ash::Device,
         allocator: &mut Allocator,
         pools: &mut DescriptorPools,
+        pipelines: &mut PipelineCache,
         current: TimelineValues,
         target: TimelineValues,
     ) {
@@ -94,11 +96,13 @@ impl GarbageCollector {
         marked.sort_unstable();
         for i in marked.into_iter().rev() {
             match to_destroy.remove(i).garbage {
-                Garbage::Pipeline(pipelines, layout) => {
+                Garbage::PipelineLayout(layout) => {
+                    // Also destroy associated pipelines
+                    pipelines.release(device, layout);
                     device.destroy_pipeline_layout(layout, None);
-                    for pipeline in pipelines {
-                        device.destroy_pipeline(pipeline, None);
-                    }
+                }
+                Garbage::Pipeline(pipeline) => {
+                    device.destroy_pipeline(pipeline, None);
                 }
                 Garbage::Buffer {
                     buffer, allocation, ..

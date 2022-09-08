@@ -1,16 +1,14 @@
 use api::graphics_pipeline::GraphicsPipelineCreateInfo;
 use ash::vk::{self, Handle};
 use crossbeam_channel::Sender;
-use std::{collections::HashMap, ffi::CString, sync::Mutex};
+use std::ffi::CString;
 
-use crate::util::garbage_collector::Garbage;
+use crate::util::{garbage_collector::Garbage, pipeline_cache::PipelineCache};
 
 pub struct GraphicsPipeline {
     descriptor: GraphicsPipelineCreateInfo<crate::VulkanBackend>,
-    pub(crate) layout: vk::PipelineLayout,
+    layout: vk::PipelineLayout,
     garbage: Sender<Garbage>,
-    /// Maps render passes to the appropriate pipeline.
-    pipelines: Mutex<HashMap<vk::RenderPass, vk::Pipeline>>,
 }
 
 impl GraphicsPipeline {
@@ -35,7 +33,6 @@ impl GraphicsPipeline {
             descriptor,
             layout,
             garbage,
-            pipelines: Mutex::new(HashMap::default()),
         }
     }
 
@@ -48,12 +45,12 @@ impl GraphicsPipeline {
     pub(crate) unsafe fn get(
         &self,
         device: &ash::Device,
+        pipelines: &mut PipelineCache,
         debug: Option<&ash::extensions::ext::DebugUtils>,
         render_pass: vk::RenderPass,
     ) -> vk::Pipeline {
-        let mut pipelines = self.pipelines.lock().unwrap();
-        if let Some(out) = pipelines.get(&render_pass) {
-            return *out;
+        if let Some(pipeline) = pipelines.get(self.layout, render_pass) {
+            return pipeline;
         }
 
         // Need to create a new pipeline
@@ -236,7 +233,12 @@ impl GraphicsPipeline {
         // Name the pipeline if requested
         if let Some(name) = &self.descriptor.debug_name {
             if let Some(debug) = debug {
-                let name = CString::new(format!("{}_{}", name.as_str(), pipelines.len())).unwrap();
+                let name = CString::new(format!(
+                    "{}_{}",
+                    name.as_str(),
+                    pipelines.count(self.layout)
+                ))
+                .unwrap();
                 let name_info = vk::DebugUtilsObjectNameInfoEXT::builder()
                     .object_type(vk::ObjectType::PIPELINE)
                     .object_handle(pipeline.as_raw())
@@ -249,7 +251,7 @@ impl GraphicsPipeline {
             }
         }
 
-        pipelines.insert(render_pass, pipeline);
+        pipelines.insert(self.layout, render_pass, pipeline);
         pipeline
     }
 }
@@ -257,15 +259,7 @@ impl GraphicsPipeline {
 impl Drop for GraphicsPipeline {
     fn drop(&mut self) {
         self.garbage
-            .send(Garbage::Pipeline(
-                self.pipelines
-                    .lock()
-                    .unwrap()
-                    .drain()
-                    .map(|(_, pipeline)| pipeline)
-                    .collect(),
-                self.layout,
-            ))
+            .send(Garbage::PipelineLayout(self.layout))
             .unwrap();
     }
 }

@@ -41,6 +41,7 @@ use thiserror::Error;
 use util::{
     descriptor_pool::DescriptorPools,
     garbage_collector::{GarbageCollector, TimelineValues},
+    pipeline_cache::PipelineCache,
     pipeline_tracker::PipelineTracker,
     resource_state::ResourceState,
     semaphores::SemaphoreTracker,
@@ -99,6 +100,7 @@ pub struct VulkanBackend {
     pub(crate) garbage: GarbageCollector,
     pub(crate) resource_state: ShardedLock<ResourceState>,
     pub(crate) pools: Mutex<DescriptorPools>,
+    pub(crate) pipelines: Mutex<PipelineCache>,
 }
 
 #[derive(Default)]
@@ -206,6 +208,7 @@ impl Backend for VulkanBackend {
         let mut resc_state = self.resource_state.write().unwrap();
         let mut allocator = self.allocator.lock().unwrap();
         let mut pools = self.pools.lock().unwrap();
+        let mut pipelines = self.pipelines.lock().unwrap();
         let mut main = self.main.write().unwrap();
         let mut transfer = self.transfer.write().unwrap();
         let mut compute = self.compute.write().unwrap();
@@ -226,6 +229,7 @@ impl Backend for VulkanBackend {
             &self.device,
             &mut allocator,
             &mut pools,
+            &mut pipelines,
             current_values,
             target_values,
         );
@@ -387,9 +391,10 @@ impl Backend for VulkanBackend {
                     self.device.cmd_dispatch(cb, *x, *y, *z);
                 }
                 Command::BindGraphicsPipeline(pipeline) => {
-                    active_layout = pipeline.internal().layout;
+                    active_layout = pipeline.internal().layout();
                     let pipeline = pipeline.internal().get(
                         &self.device,
+                        &mut pipelines,
                         self.debug.as_ref().map(|(utils, _)| utils),
                         active_render_pass,
                     );
@@ -965,6 +970,7 @@ impl VulkanBackend {
             garbage: GarbageCollector::new(),
             resource_state: ShardedLock::new(ResourceState::default()),
             pools: Mutex::new(DescriptorPools::default()),
+            pipelines: Mutex::new(PipelineCache::default()),
         };
 
         Ok(ctx)
@@ -993,9 +999,17 @@ impl Drop for VulkanBackend {
 
             let mut allocator = self.allocator.lock().unwrap();
             let mut pools = self.pools.lock().unwrap();
-            self.garbage
-                .cleanup(&self.device, &mut allocator, &mut pools, current, target);
-            self.pools.lock().unwrap().release(&self.device);
+            let mut pipelines = self.pipelines.lock().unwrap();
+            self.garbage.cleanup(
+                &self.device,
+                &mut allocator,
+                &mut pools,
+                &mut pipelines,
+                current,
+                target,
+            );
+            pools.release(&self.device);
+            pipelines.release_all(&self.device);
             std::mem::drop(allocator);
             std::mem::drop(ManuallyDrop::take(&mut self.allocator));
             self.framebuffers.release(&self.device);

@@ -34,12 +34,12 @@ pub(crate) struct Binding {
 
 pub(crate) enum BoundValue {
     UniformBuffer {
-        ref_counter: BufferRefCounter,
+        _ref_counter: BufferRefCounter,
         buffer: vk::Buffer,
         array_element: usize,
     },
     StorageBuffer {
-        ref_counter: BufferRefCounter,
+        _ref_counter: BufferRefCounter,
         buffer: vk::Buffer,
         array_element: usize,
     },
@@ -152,7 +152,7 @@ impl DescriptorSet {
                             access,
                             stage,
                             value: BoundValue::UniformBuffer {
-                                ref_counter: buffer.ref_counter.clone(),
+                                _ref_counter: buffer.ref_counter.clone(),
                                 buffer: buffer.buffer,
                                 array_element: *array_element,
                             },
@@ -185,7 +185,7 @@ impl DescriptorSet {
                             access,
                             stage,
                             value: BoundValue::StorageBuffer {
-                                ref_counter: buffer.ref_counter.clone(),
+                                _ref_counter: buffer.ref_counter.clone(),
                                 buffer: buffer.buffer,
                                 array_element: *array_element,
                             },
