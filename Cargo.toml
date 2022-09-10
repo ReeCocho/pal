@@ -2,6 +2,8 @@
 name = "pal"
 version = "0.1.0"
 edition = "2021"
+autoexamples = false
+build = "build.rs"
 
 [workspace]
 members = [
@@ -20,3 +22,20 @@ vulkan = { path = "./backends/vulkan/", version = "0.1", optional = true }
 [dev-dependencies]
 winit = "0.27"
 bytemuck = "1"
+ordered-float = "3"
+glam = { version = "0.21", features = [ "bytemuck" ] }
+
+[[example]]
+name = "blank_window"
+
+[[example]]
+name = "complex"
+
+[[example]]
+name = "triangle"
+
+[[example]]
+name = "uniform_buffer"
+
+[[example]]
+name = "textured_cube"

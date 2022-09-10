@@ -78,6 +78,7 @@ fn main() {
                                 // And store the image instead of discarding the contents
                                 store_op: StoreOp::Store,
                             }],
+                            depth_stencil_attachment: None,
                         },
                         |_pass| {
                             // Here is where you would put rendering commands if you wanted to draw

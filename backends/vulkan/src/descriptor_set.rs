@@ -11,7 +11,10 @@ use crossbeam_channel::Sender;
 
 use crate::{
     buffer::BufferRefCounter,
-    util::{descriptor_pool::DescriptorPools, garbage_collector::Garbage},
+    texture::TextureRefCounter,
+    util::{
+        descriptor_pool::DescriptorPools, garbage_collector::Garbage, sampler_cache::SamplerCache,
+    },
 };
 
 pub struct DescriptorSet {
@@ -41,6 +44,14 @@ pub(crate) enum BoundValue {
     StorageBuffer {
         _ref_counter: BufferRefCounter,
         buffer: vk::Buffer,
+        array_element: usize,
+    },
+    Texture {
+        _ref_counter: TextureRefCounter,
+        image: vk::Image,
+        view: vk::ImageView,
+        aspect_mask: vk::ImageAspectFlags,
+        mip_count: u32,
         array_element: usize,
     },
 }
@@ -99,12 +110,27 @@ impl DescriptorSet {
         &mut self,
         device: &ash::Device,
         layout: &DescriptorSetLayout,
+        sampler_cache: &mut SamplerCache,
         updates: &[DescriptorSetUpdate<crate::VulkanBackend>],
     ) {
         let mut writes = Vec::with_capacity(updates.len());
         let mut buffers = Vec::with_capacity(updates.len());
+        let mut images = Vec::with_capacity(updates.len());
 
         for update in updates {
+            // Deal with the old value
+            if let Some(old) = self.bound[update.binding as usize][update.array_element].take() {
+                match old.value {
+                    // It's safe to destroy the image view now because we guarantee the set is not
+                    // being used by
+                    BoundValue::Texture { view, .. } => {
+                        device.destroy_image_view(view, None);
+                    }
+                    _ => {}
+                }
+            }
+
+            // Bind new value
             self.bound[update.binding as usize][update.array_element] = Some({
                 let binding = layout.get_binding(update.binding).unwrap();
                 let access = match binding.ty {
@@ -191,7 +217,68 @@ impl DescriptorSet {
                             },
                         }
                     }
-                    DescriptorValue::Texture => todo!(),
+                    DescriptorValue::Texture {
+                        texture,
+                        array_element,
+                        sampler,
+                        base_mip,
+                        mip_count,
+                    } => {
+                        let texture = texture.internal();
+
+                        // Create a view for the texture
+                        let create_info = vk::ImageViewCreateInfo::builder()
+                            .format(texture.format)
+                            .view_type(vk::ImageViewType::TYPE_2D)
+                            .subresource_range(vk::ImageSubresourceRange {
+                                aspect_mask: texture.aspect_flags,
+                                base_mip_level: *base_mip as u32,
+                                level_count: *mip_count as u32,
+                                base_array_layer: *array_element as u32,
+                                layer_count: 1,
+                            })
+                            .components(vk::ComponentMapping {
+                                r: vk::ComponentSwizzle::R,
+                                g: vk::ComponentSwizzle::G,
+                                b: vk::ComponentSwizzle::B,
+                                a: vk::ComponentSwizzle::A,
+                            })
+                            .image(texture.image)
+                            .build();
+
+                        let view = device.create_image_view(&create_info, None).unwrap();
+
+                        images.push(
+                            vk::DescriptorImageInfo::builder()
+                                .sampler(sampler_cache.get(device, *sampler))
+                                .image_view(view)
+                                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                                .build(),
+                        );
+
+                        writes.push(
+                            vk::WriteDescriptorSet::builder()
+                                .dst_set(self.set)
+                                .dst_binding(update.binding)
+                                .dst_array_element(update.array_element as u32)
+                                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                                .image_info(&images[images.len() - 1..])
+                                .build(),
+                        );
+
+                        Binding {
+                            access,
+                            stage,
+                            value: BoundValue::Texture {
+                                _ref_counter: texture.ref_counter.clone(),
+                                image: texture.image,
+                                view,
+                                aspect_mask: texture.aspect_flags,
+                                mip_count: texture.mip_count,
+                                array_element: *array_element,
+                            },
+                        }
+                    }
                 }
             });
         }
@@ -206,6 +293,7 @@ impl Drop for DescriptorSet {
             .send(Garbage::DescriptorSet {
                 set: self.set,
                 layout: self.layout,
+                bindings: std::mem::take(&mut self.bound),
             })
             .unwrap();
     }

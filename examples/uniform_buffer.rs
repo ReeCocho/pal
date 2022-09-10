@@ -284,6 +284,7 @@ fn main() {
                                 load_op: LoadOp::Clear(ClearColor::RgbaF32(0.0, 0.0, 0.0, 0.0)),
                                 store_op: StoreOp::Store,
                             }],
+                            depth_stencil_attachment: None,
                         },
                         |pass| {
                             // Bind our graphics pipeline

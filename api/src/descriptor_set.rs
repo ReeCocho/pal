@@ -4,6 +4,7 @@ use thiserror::Error;
 use crate::{
     buffer::Buffer,
     context::Context,
+    texture::{Sampler, Texture},
     types::{AccessType, ShaderStage},
     Backend,
 };
@@ -68,7 +69,13 @@ pub enum DescriptorValue<'a, B: Backend> {
         buffer: &'a Buffer<B>,
         array_element: usize,
     },
-    Texture,
+    Texture {
+        texture: &'a Texture<B>,
+        array_element: usize,
+        sampler: Sampler,
+        base_mip: usize,
+        mip_count: usize,
+    },
 }
 
 pub(crate) struct DescriptorSetLayoutInner<B: Backend> {

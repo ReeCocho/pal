@@ -16,7 +16,8 @@ pub mod prelude {
 
     // Render pass
     pub use api::render_pass::{
-        ColorAttachment, ColorAttachmentSource, RenderPass, RenderPassDescriptor, VertexBind,
+        ColorAttachment, ColorAttachmentSource, DepthStencilAttachment, RenderPass,
+        RenderPassDescriptor, VertexBind,
     };
 
     // Command buffer
@@ -49,7 +50,7 @@ pub mod prelude {
 
     // Texture
     pub type Texture = api::texture::Texture<crate::Backend>;
-    pub use api::texture::{TextureCreateError, TextureCreateInfo};
+    pub use api::texture::{Sampler, TextureCreateError, TextureCreateInfo};
 
     // Descriptor set & layout
     pub type DescriptorSetLayout = api::descriptor_set::DescriptorSetLayout<crate::Backend>;

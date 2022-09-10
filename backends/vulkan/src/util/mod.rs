@@ -7,6 +7,7 @@ pub mod garbage_collector;
 pub mod pipeline_cache;
 pub mod pipeline_tracker;
 pub mod resource_state;
+pub mod sampler_cache;
 pub mod semaphores;
 pub mod tracking;
 
@@ -47,6 +48,10 @@ pub(crate) fn to_vk_format(format: TextureFormat) -> vk::Format {
         TextureFormat::R8Unorm => vk::Format::R8_UNORM,
         TextureFormat::Rgba8Unorm => vk::Format::R8G8B8A8_UNORM,
         TextureFormat::Bgra8Unorm => vk::Format::B8G8R8A8_UNORM,
+        TextureFormat::D16Unorm => vk::Format::D16_UNORM,
+        TextureFormat::D24UnormS8Uint => vk::Format::D24_UNORM_S8_UINT,
+        TextureFormat::D32Sfloat => vk::Format::D32_SFLOAT,
+        TextureFormat::D32SfloatS8Uint => vk::Format::D32_SFLOAT_S8_UINT,
     }
 }
 
@@ -189,6 +194,31 @@ pub(crate) fn to_vk_blend_op(bo: BlendOp) -> vk::BlendOp {
 }
 
 #[inline(always)]
+pub(crate) fn to_vk_filter(f: Filter) -> vk::Filter {
+    match f {
+        Filter::Nearest => vk::Filter::NEAREST,
+        Filter::Linear => vk::Filter::LINEAR,
+    }
+}
+
+#[inline(always)]
+pub(crate) fn to_vk_reduction_mode(rm: ReductionMode) -> vk::SamplerReductionMode {
+    match rm {
+        ReductionMode::Min => vk::SamplerReductionMode::MIN,
+        ReductionMode::Max => vk::SamplerReductionMode::MAX,
+    }
+}
+
+#[inline(always)]
+pub(crate) fn to_vk_address_mode(sam: SamplerAddressMode) -> vk::SamplerAddressMode {
+    match sam {
+        SamplerAddressMode::Repeat => vk::SamplerAddressMode::REPEAT,
+        SamplerAddressMode::MirroredRepeat => vk::SamplerAddressMode::MIRRORED_REPEAT,
+        SamplerAddressMode::ClampToEdge => vk::SamplerAddressMode::CLAMP_TO_EDGE,
+    }
+}
+
+#[inline(always)]
 pub(crate) fn to_vk_color_components(cc: ColorComponents) -> vk::ColorComponentFlags {
     let mut out = vk::ColorComponentFlags::default();
     if cc.contains(ColorComponents::R) {
@@ -258,11 +288,11 @@ pub(crate) fn to_vk_image_usage(iu: TextureUsage) -> vk::ImageUsageFlags {
 }
 
 #[inline(always)]
-pub(crate) fn to_vk_image_type(it: ImageType) -> vk::ImageType {
+pub(crate) fn to_vk_image_type(it: TextureType) -> vk::ImageType {
     match it {
-        ImageType::OneDimension => vk::ImageType::TYPE_1D,
-        ImageType::TwoDimensions => vk::ImageType::TYPE_2D,
-        ImageType::ThreeDimensions => vk::ImageType::TYPE_3D,
+        TextureType::Type1D => vk::ImageType::TYPE_1D,
+        TextureType::Type2D => vk::ImageType::TYPE_2D,
+        TextureType::Type3D => vk::ImageType::TYPE_3D,
     }
 }
 

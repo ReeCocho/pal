@@ -46,6 +46,7 @@ use util::{
     pipeline_cache::PipelineCache,
     pipeline_tracker::PipelineTracker,
     resource_state::ResourceState,
+    sampler_cache::SamplerCache,
     semaphores::SemaphoreTracker,
     tracking::TrackState,
 };
@@ -104,6 +105,7 @@ pub struct VulkanBackend {
     pub(crate) resource_state: ShardedLock<ResourceState>,
     pub(crate) pools: Mutex<DescriptorPools>,
     pub(crate) pipelines: Mutex<PipelineCache>,
+    pub(crate) samplers: Mutex<SamplerCache>,
 }
 
 #[derive(Default)]
@@ -309,7 +311,19 @@ impl Backend for VulkanBackend {
                                 dims = image.internal().dims();
                                 image.internal().view()
                             }
+                            ColorAttachmentSource::Texture {
+                                texture,
+                                array_element,
+                            } => {
+                                dims = (texture.dims().0, texture.dims().1);
+                                texture.internal().views[*array_element]
+                            }
                         });
+                    }
+
+                    if let Some(attachment) = &descriptor.depth_stencil_attachment {
+                        let texture = attachment.texture.internal();
+                        views.push(texture.views[attachment.array_element]);
                     }
 
                     // Find the framebuffer
@@ -334,9 +348,24 @@ impl Backend for VulkanBackend {
                                 ClearColor::RU32(r) => vk::ClearColorValue {
                                     uint32: [*r, 0, 0, 0],
                                 },
-                                ClearColor::D32S32(_, _) => panic!("invalid clear color type"),
+                                ClearColor::D32S32(_, _) => {
+                                    panic!("invalid color clear color type")
+                                }
                             };
                             clear_values.push(vk::ClearValue { color });
+                        }
+                    }
+
+                    if let Some(attachment) = &descriptor.depth_stencil_attachment {
+                        if let LoadOp::Clear(clear_color) = &attachment.load_op {
+                            let depth_stencil = match clear_color {
+                                ClearColor::D32S32(d, s) => vk::ClearDepthStencilValue {
+                                    depth: *d,
+                                    stencil: *s,
+                                },
+                                _ => panic!("invalid depth clear color"),
+                            };
+                            clear_values.push(vk::ClearValue { depth_stencil })
                         }
                     }
 
@@ -710,7 +739,8 @@ impl Backend for VulkanBackend {
         layout: &Self::DescriptorSetLayout,
         updates: &[DescriptorSetUpdate<Self>],
     ) {
-        set.update(&self.device, layout, updates);
+        let mut samplers = self.samplers.lock().unwrap();
+        set.update(&self.device, layout, &mut samplers, updates);
     }
 }
 
@@ -981,6 +1011,7 @@ impl VulkanBackend {
             resource_state: ShardedLock::new(ResourceState::default()),
             pools: Mutex::new(DescriptorPools::default()),
             pipelines: Mutex::new(PipelineCache::default()),
+            samplers: Mutex::new(SamplerCache::default()),
         };
 
         Ok(ctx)
@@ -1010,7 +1041,8 @@ impl Drop for VulkanBackend {
             let mut allocator = self.allocator.lock().unwrap();
             let mut pools = self.pools.lock().unwrap();
             let mut pipelines = self.pipelines.lock().unwrap();
-            self.garbage.cleanup(
+            let mut samplers = self.samplers.lock().unwrap();
+            self.garbage.cleanup_all(
                 &self.device,
                 &mut allocator,
                 &mut pools,
@@ -1020,6 +1052,7 @@ impl Drop for VulkanBackend {
             );
             pools.release(&self.device);
             pipelines.release_all(&self.device);
+            samplers.release(&self.device);
             std::mem::drop(allocator);
             std::mem::drop(ManuallyDrop::take(&mut self.allocator));
             self.framebuffers.release(&self.device);

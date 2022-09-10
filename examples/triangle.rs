@@ -9,6 +9,9 @@ use winit::{
     window::WindowBuilder,
 };
 
+#[path = "./util.rs"]
+mod util;
+
 fn main() {
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
@@ -42,52 +45,12 @@ fn main() {
     )
     .unwrap();
 
-    // Create vertex buffer
-    const VERTICES: &'static [f32] = &[
-        // First
-        -1.0, -1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, // Second
-        1.0, -1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, // Third
-        0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0,
-    ];
-    let vertex_staging = Buffer::new_staging(
-        context.clone(),
-        Some(String::from("vertex_staging")),
-        bytemuck::cast_slice(&VERTICES),
-    )
-    .unwrap();
-
-    let vertex_buffer = Buffer::new(
-        context.clone(),
-        BufferCreateInfo {
-            size: (VERTICES.len() * std::mem::size_of::<f32>()) as u64,
-            array_elements: 1,
-            buffer_usage: BufferUsage::VERTEX_BUFFER | BufferUsage::TRANSFER_DST,
-            memory_usage: MemoryUsage::GpuOnly,
-            debug_name: Some(String::from("vertex_buffer")),
-        },
-    )
-    .unwrap();
-
-    // Create index buffer
-    const INDEX: &'static [u16] = &[0, 1, 2];
-    let index_staging = Buffer::new_staging(
-        context.clone(),
-        Some(String::from("index_staging")),
-        bytemuck::cast_slice(&INDEX),
-    )
-    .unwrap();
-
-    let index_buffer = Buffer::new(
-        context.clone(),
-        BufferCreateInfo {
-            size: (INDEX.len() * std::mem::size_of::<u16>()) as u64,
-            array_elements: 1,
-            buffer_usage: BufferUsage::INDEX_BUFFER | BufferUsage::TRANSFER_DST,
-            memory_usage: MemoryUsage::GpuOnly,
-            debug_name: Some(String::from("index_buffer")),
-        },
-    )
-    .unwrap();
+    // Create triangle buffers
+    let buffers = util::create_triangle(&context);
+    let vertex_buffer = buffers.vertex;
+    let vertex_staging = buffers.vertex_staging;
+    let index_buffer = buffers.index;
+    let index_staging = buffers.index_staging;
 
     // Write the staging buffers to the primary buffers
     context
@@ -209,6 +172,7 @@ fn main() {
                                 load_op: LoadOp::Clear(ClearColor::RgbaF32(0.0, 0.0, 0.0, 0.0)),
                                 store_op: StoreOp::Store,
                             }],
+                            depth_stencil_attachment: None,
                         },
                         |pass| {
                             // Bind our graphics pipeline

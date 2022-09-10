@@ -13,15 +13,17 @@ impl Shader {
         debug: Option<&ash::extensions::ext::DebugUtils>,
         create_info: ShaderCreateInfo,
     ) -> Result<Self, ShaderCreateError> {
-        let code = match bytemuck::try_cast_slice::<u8, u32>(create_info.code) {
-            Ok(code) => code,
-            Err(_) => {
-                return Err(ShaderCreateError::Other(String::from(
-                    "shader code size is not a multiple of 4",
-                )))
-            }
+        if create_info.code.len() % std::mem::size_of::<u32>() != 0 {
+            return Err(ShaderCreateError::Other(String::from(
+                "shader code size is not a multiple of 4",
+            )));
+        }
+
+        let module_create_info = vk::ShaderModuleCreateInfo {
+            p_code: create_info.code.as_ptr() as *const u32,
+            code_size: create_info.code.len(),
+            ..Default::default()
         };
-        let module_create_info = vk::ShaderModuleCreateInfo::builder().code(code).build();
         let module = match device.create_shader_module(&module_create_info, None) {
             Ok(module) => module,
             Err(err) => return Err(ShaderCreateError::Other(err.to_string())),

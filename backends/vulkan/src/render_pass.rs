@@ -65,12 +65,35 @@ impl RenderPassCache {
                             ColorAttachmentSource::SurfaceImage(_) => {
                                 vk::ImageLayout::PRESENT_SRC_KHR
                             }
+                            ColorAttachmentSource::Texture { .. } => {
+                                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+                            }
                         })
                         .load_op(crate::util::to_vk_load_op(attachment.load_op))
                         .store_op(crate::util::to_vk_store_op(attachment.store_op))
                         .format(match &attachment.source {
                             ColorAttachmentSource::SurfaceImage(image) => image.internal().format(),
+                            ColorAttachmentSource::Texture { texture, .. } => {
+                                texture.internal().format
+                            }
                         })
+                        .build(),
+                );
+            }
+
+            if let Some(attachment) = &pass.depth_stencil_attachment {
+                attachments.push(
+                    vk::AttachmentDescription::builder()
+                        .samples(vk::SampleCountFlags::TYPE_1)
+                        .initial_layout(match attachment.load_op {
+                            LoadOp::Load => vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                            LoadOp::DontCare => vk::ImageLayout::UNDEFINED,
+                            LoadOp::Clear(_) => vk::ImageLayout::UNDEFINED,
+                        })
+                        .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                        .load_op(crate::util::to_vk_load_op(attachment.load_op))
+                        .store_op(crate::util::to_vk_store_op(attachment.store_op))
+                        .format(attachment.texture.internal().format)
                         .build(),
                 );
             }
@@ -87,10 +110,20 @@ impl RenderPassCache {
             }
 
             // Single subpass
-            let subpass = [vk::SubpassDescription::builder()
+            let depth_attachment;
+            let subpass = vk::SubpassDescription::builder()
                 .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-                .color_attachments(&attachment_refs)
-                .build()];
+                .color_attachments(&attachment_refs);
+            let subpass = if pass.depth_stencil_attachment.is_some() {
+                depth_attachment = vk::AttachmentReference::builder()
+                    .attachment(attachment_refs.len() as u32)
+                    .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                    .build();
+                subpass.depth_stencil_attachment(&depth_attachment)
+            } else {
+                subpass
+            };
+            let subpass = [subpass.build()];
 
             // Create the render pass
             unsafe {
@@ -228,10 +261,18 @@ impl VkRenderPassDescriptor {
             out.color_attachments.push(VkAttachment {
                 image_format: match &attachment.source {
                     ColorAttachmentSource::SurfaceImage(image) => image.internal().format(),
+                    ColorAttachmentSource::Texture { texture, .. } => texture.internal().format,
                 },
                 load_op: crate::util::to_vk_load_op(attachment.load_op),
                 store_op: crate::util::to_vk_store_op(attachment.store_op),
             });
+        }
+        if let Some(attachment) = &descriptor.depth_stencil_attachment {
+            out.depth_stencil_attachment = Some(VkAttachment {
+                image_format: attachment.texture.internal().format,
+                load_op: crate::util::to_vk_load_op(attachment.load_op),
+                store_op: crate::util::to_vk_store_op(attachment.store_op),
+            })
         }
         out
     }

@@ -5,6 +5,10 @@ pub enum TextureFormat {
     R8Unorm,
     Rgba8Unorm,
     Bgra8Unorm,
+    D16Unorm,
+    D24UnormS8Uint,
+    D32Sfloat,
+    D32SfloatS8Uint,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -174,6 +178,34 @@ pub enum ShaderStage {
     Compute,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Filter {
+    Nearest,
+    Linear,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ReductionMode {
+    Min,
+    Max,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum SamplerAddressMode {
+    Repeat,
+    MirroredRepeat,
+    ClampToEdge,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum AnisotropyLevel {
+    X1,
+    X2,
+    X4,
+    X8,
+    X16,
+}
+
 bitflags! {
     pub struct BufferUsage: u32 {
         const TRANSFER_SRC    = 0b0000001;
@@ -198,10 +230,10 @@ bitflags! {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum ImageType {
-    OneDimension,
-    TwoDimensions,
-    ThreeDimensions,
+pub enum TextureType {
+    Type1D,
+    Type2D,
+    Type3D,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -216,4 +248,30 @@ pub enum MemoryUsage {
 pub enum AccessType {
     Read,
     ReadWrite,
+}
+
+impl TextureFormat {
+    #[inline(always)]
+    pub fn is_color(&self) -> bool {
+        !(self.is_depth() || self.is_stencil())
+    }
+
+    #[inline(always)]
+    pub fn is_depth(&self) -> bool {
+        match *self {
+            TextureFormat::D16Unorm
+            | TextureFormat::D24UnormS8Uint
+            | TextureFormat::D32Sfloat
+            | TextureFormat::D32SfloatS8Uint => true,
+            _ => false,
+        }
+    }
+
+    #[inline(always)]
+    pub fn is_stencil(&self) -> bool {
+        match *self {
+            TextureFormat::D24UnormS8Uint | TextureFormat::D32SfloatS8Uint => true,
+            _ => false,
+        }
+    }
 }

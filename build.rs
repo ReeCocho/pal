@@ -13,6 +13,14 @@ fn main() {
         Path::new("./examples/shaders/"),
     );
     compile(
+        Path::new("./examples/shaders/cube.vert"),
+        Path::new("./examples/shaders/"),
+    );
+    compile(
+        Path::new("./examples/shaders/cube.frag"),
+        Path::new("./examples/shaders/"),
+    );
+    compile(
         Path::new("./examples/shaders/uniform_buffer.vert"),
         Path::new("./examples/shaders/"),
     );

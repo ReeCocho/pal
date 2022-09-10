@@ -4,12 +4,14 @@ use crate::{
     descriptor_set::DescriptorSet,
     graphics_pipeline::GraphicsPipeline,
     surface::SurfaceImage,
+    texture::Texture,
     types::{IndexType, LoadOp, ShaderStage, StoreOp},
     Backend,
 };
 
 pub struct RenderPassDescriptor<'a, B: Backend> {
     pub color_attachments: Vec<ColorAttachment<'a, B>>,
+    pub depth_stencil_attachment: Option<DepthStencilAttachment<'a, B>>,
 }
 
 pub struct ColorAttachment<'a, B: Backend> {
@@ -20,6 +22,17 @@ pub struct ColorAttachment<'a, B: Backend> {
 
 pub enum ColorAttachmentSource<'a, B: Backend> {
     SurfaceImage(&'a SurfaceImage<B>),
+    Texture {
+        texture: &'a Texture<B>,
+        array_element: usize,
+    },
+}
+
+pub struct DepthStencilAttachment<'a, B: Backend> {
+    pub texture: &'a Texture<B>,
+    pub array_element: usize,
+    pub load_op: LoadOp,
+    pub store_op: StoreOp,
 }
 
 pub struct RenderPass<'a, B: Backend> {

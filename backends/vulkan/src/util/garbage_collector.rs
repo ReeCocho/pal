@@ -4,7 +4,11 @@ use ash::vk;
 use crossbeam_channel::{Receiver, Sender};
 use gpu_allocator::vulkan::{Allocation, Allocator};
 
-use crate::{buffer::BufferRefCounter, texture::TextureRefCounter};
+use crate::{
+    buffer::BufferRefCounter,
+    descriptor_set::{Binding, BoundValue},
+    texture::TextureRefCounter,
+};
 
 use super::{descriptor_pool::DescriptorPools, pipeline_cache::PipelineCache};
 
@@ -24,12 +28,14 @@ pub(crate) enum Garbage {
     },
     Texture {
         image: vk::Image,
+        views: Vec<vk::ImageView>,
         allocation: Allocation,
         ref_counter: TextureRefCounter,
     },
     DescriptorSet {
         set: vk::DescriptorSet,
         layout: vk::DescriptorSetLayout,
+        bindings: Vec<Vec<Option<Binding>>>,
     },
 }
 
@@ -57,6 +63,23 @@ impl GarbageCollector {
 
     pub fn sender(&self) -> Sender<Garbage> {
         self.sender.clone()
+    }
+
+    pub unsafe fn cleanup_all(
+        &self,
+        device: &ash::Device,
+        allocator: &mut Allocator,
+        pools: &mut DescriptorPools,
+        pipelines: &mut PipelineCache,
+        current: TimelineValues,
+        target: TimelineValues,
+    ) {
+        loop {
+            self.cleanup(device, allocator, pools, pipelines, current, target);
+            if self.to_destroy.lock().unwrap().is_empty() {
+                break;
+            }
+        }
     }
 
     pub unsafe fn cleanup(
@@ -121,13 +144,35 @@ impl GarbageCollector {
                     allocator.free(allocation).unwrap();
                 }
                 Garbage::Texture {
-                    image, allocation, ..
+                    image,
+                    views,
+                    allocation,
+                    ..
                 } => {
                     device.destroy_image(image, None);
+                    for view in views {
+                        device.destroy_image_view(view, None);
+                    }
                     allocator.free(allocation).unwrap();
                 }
-                Garbage::DescriptorSet { set, layout } => {
+                Garbage::DescriptorSet {
+                    set,
+                    layout,
+                    bindings,
+                } => {
                     pools.get_by_layout(layout).unwrap().free(set);
+                    for binding in bindings {
+                        for element in binding {
+                            if let Some(element) = element {
+                                match element.value {
+                                    BoundValue::Texture { view, .. } => {
+                                        device.destroy_image_view(view, None);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

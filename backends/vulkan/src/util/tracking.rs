@@ -6,7 +6,7 @@ use api::{
 };
 
 use super::{
-    pipeline_tracker::{PipelineTracker, ResourceUsage},
+    pipeline_tracker::{ImageLayoutTransition, PipelineTracker, ResourceUsage},
     resource_state::{LatestUsage, ResourceState},
     semaphores::{SemaphoreTracker, WaitInfo},
 };
@@ -58,11 +58,10 @@ unsafe fn track_render_pass(
     let mut buffers_pipeline = Vec::default();
     let mut images_pipeline = Vec::with_capacity(descriptor.color_attachments.len());
     let mut buffers_semaphore = Vec::default();
-    // TODO: let mut images_semaphore = Vec::with_capacity(descriptor.color_attachments.len());
 
-    // Track images used in the pass
+    // Track color attachments used in the pass
     for attachment in &descriptor.color_attachments {
-        let image = match attachment.source {
+        let (image, array_elem, layout_transition) = match attachment.source {
             ColorAttachmentSource::SurfaceImage(image) => {
                 // Surface image has special semaphores
                 let semaphores = image.internal().semaphores();
@@ -77,15 +76,123 @@ unsafe fn track_render_pass(
                     },
                 );
 
-                image.internal().image()
+                // No layout transition is needed for surface images because it is handled by the
+                // render pass.
+                (image.internal().image(), 0 as usize, None)
+            }
+            ColorAttachmentSource::Texture {
+                texture,
+                array_element,
+            } => {
+                // Determine if a layout transition is needed
+                let transition = match state.resc_state.set_image(
+                    texture.internal().image,
+                    array_element,
+                    Some(LatestUsage {
+                        queue: state.queue_ty,
+                        value: state.target_value,
+                        layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                    }),
+                ) {
+                    // If there was a previous usage, we only need to transition the layout if
+                    // it doesn't match the updated one
+                    Some(old_usage) => {
+                        old_usage.wait_if_needed(
+                            state.semaphores,
+                            state.queue_ty,
+                            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                            state.main,
+                            state.transfer,
+                            state.compute,
+                            state.present,
+                        );
+                        old_usage.needs_layout_transition(
+                            texture.internal().aspect_flags,
+                            texture.internal().mip_count as u32,
+                            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                        )
+                    }
+                    // No old usage implies that the layout is undefined, and thus a transition is
+                    // needed
+                    None => Some(ImageLayoutTransition {
+                        old: vk::ImageLayout::UNDEFINED,
+                        new: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                        aspect_mask: texture.internal().aspect_flags,
+                        mip_count: texture.internal().mip_count,
+                    }),
+                };
+
+                (texture.internal().image, array_element, transition)
             }
         };
         images_pipeline.push((
             image,
+            array_elem,
             ResourceUsage {
                 used: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
                 access: vk::AccessFlags::COLOR_ATTACHMENT_WRITE
                     | vk::AccessFlags::COLOR_ATTACHMENT_READ,
+
+                layout_transition,
+            },
+        ));
+    }
+
+    // Track depth stencil attachment
+    if let Some(attachment) = &descriptor.depth_stencil_attachment {
+        let (image, array_elem, layout_transition) = {
+            let internal = attachment.texture.internal();
+
+            // Determine if a layout transition is needed
+            let transition = match state.resc_state.set_image(
+                internal.image,
+                attachment.array_element,
+                Some(LatestUsage {
+                    queue: state.queue_ty,
+                    value: state.target_value,
+                    layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                }),
+            ) {
+                // If there was a previous usage, we only need to transition the layout if
+                // it doesn't match the updated one
+                Some(old_usage) => {
+                    old_usage.wait_if_needed(
+                        state.semaphores,
+                        state.queue_ty,
+                        vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                            | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                        state.main,
+                        state.transfer,
+                        state.compute,
+                        state.present,
+                    );
+                    old_usage.needs_layout_transition(
+                        internal.aspect_flags,
+                        internal.mip_count as u32,
+                        vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                    )
+                }
+                // No old usage implies that the layout is undefined, and thus a transition is
+                // needed
+                None => Some(ImageLayoutTransition {
+                    old: vk::ImageLayout::UNDEFINED,
+                    new: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                    aspect_mask: internal.aspect_flags,
+                    mip_count: internal.mip_count,
+                }),
+            };
+
+            (internal.image, attachment.array_element, transition)
+        };
+        images_pipeline.push((
+            image,
+            array_elem,
+            ResourceUsage {
+                used: vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                    | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                access: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE
+                    | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ,
+                layout_transition,
             },
         ));
     }
@@ -100,6 +207,7 @@ unsafe fn track_render_pass(
                         ResourceUsage {
                             used: vk::PipelineStageFlags::VERTEX_INPUT,
                             access: vk::AccessFlags::VERTEX_ATTRIBUTE_READ,
+                            layout_transition: None,
                         },
                     ));
                     buffers_semaphore.push((
@@ -119,6 +227,7 @@ unsafe fn track_render_pass(
                     ResourceUsage {
                         used: vk::PipelineStageFlags::VERTEX_INPUT,
                         access: vk::AccessFlags::INDEX_READ,
+                        layout_transition: None,
                     },
                 ));
                 buffers_semaphore.push((
@@ -128,7 +237,13 @@ unsafe fn track_render_pass(
                 ));
             }
             Command::BindDescriptorSets { sets, .. } => {
-                track_descriptor_sets(sets, &mut buffers_pipeline, &mut buffers_semaphore);
+                track_descriptor_sets(
+                    sets,
+                    state,
+                    &mut buffers_pipeline,
+                    &mut buffers_semaphore,
+                    &mut images_pipeline,
+                );
             }
             Command::EndRenderPass => break,
             _ => {}
@@ -143,7 +258,6 @@ unsafe fn track_render_pass(
         barrier.execute(&state.device, state.command_buffer);
     }
 
-    // Submit semaphore values
     for (buffer, array_elem, stage) in buffers_semaphore {
         if let Some(old) = state.resc_state.set_buffer(
             buffer,
@@ -151,6 +265,7 @@ unsafe fn track_render_pass(
             Some(LatestUsage {
                 queue: state.queue_ty,
                 value: state.target_value,
+                layout: vk::ImageLayout::UNDEFINED,
             }),
         ) {
             old.wait_if_needed(
@@ -203,9 +318,8 @@ unsafe fn track_dispatch(state: &mut TrackState) {
 
     // Determine which sets are actually used
     let mut buffers_pipeline = Vec::default();
-    // TODO: let mut images_pipeline = Vec::with_capacity();
+    let mut images_pipeline = Vec::default();
     let mut buffers_semaphore = Vec::default();
-    // TODO: let mut images_semaphore = Vec::with_capacity();
 
     for command in state.commands[idx..=state.index].iter().rev() {
         // Break early if every set is bound
@@ -227,14 +341,23 @@ unsafe fn track_dispatch(state: &mut TrackState) {
             }
 
             // Track
-            track_descriptor_set(sets[i], &mut buffers_pipeline, &mut buffers_semaphore);
+            track_descriptor_set(
+                sets[i],
+                state,
+                &mut buffers_pipeline,
+                &mut buffers_semaphore,
+                &mut images_pipeline,
+            );
             bound[set_slot] = true;
             total_bound += 1;
         }
     }
 
     // Submit pipeline values
-    if let Some(barrier) = state.pipeline_tracker.update(&buffers_pipeline, &[]) {
+    if let Some(barrier) = state
+        .pipeline_tracker
+        .update(&buffers_pipeline, &images_pipeline)
+    {
         barrier.execute(&state.device, state.command_buffer);
     }
 
@@ -246,6 +369,7 @@ unsafe fn track_dispatch(state: &mut TrackState) {
             Some(LatestUsage {
                 queue: state.queue_ty,
                 value: state.target_value,
+                layout: vk::ImageLayout::UNDEFINED,
             }),
         ) {
             old.wait_if_needed(
@@ -275,6 +399,7 @@ unsafe fn track_buffer_to_buffer_copy(
                 ResourceUsage {
                     used: vk::PipelineStageFlags::TRANSFER,
                     access: vk::AccessFlags::TRANSFER_READ,
+                    layout_transition: None,
                 },
             ),
             (
@@ -282,6 +407,7 @@ unsafe fn track_buffer_to_buffer_copy(
                 ResourceUsage {
                     used: vk::PipelineStageFlags::TRANSFER,
                     access: vk::AccessFlags::TRANSFER_WRITE,
+                    layout_transition: None,
                 },
             ),
         ],
@@ -297,6 +423,7 @@ unsafe fn track_buffer_to_buffer_copy(
         Some(LatestUsage {
             queue: state.queue_ty,
             value: state.target_value,
+            layout: vk::ImageLayout::UNDEFINED,
         }),
     ) {
         old.wait_if_needed(
@@ -316,6 +443,7 @@ unsafe fn track_buffer_to_buffer_copy(
         Some(LatestUsage {
             queue: state.queue_ty,
             value: state.target_value,
+            layout: vk::ImageLayout::UNDEFINED,
         }),
     ) {
         old.wait_if_needed(
@@ -332,18 +460,28 @@ unsafe fn track_buffer_to_buffer_copy(
 
 unsafe fn track_descriptor_sets(
     sets: &[&DescriptorSet<crate::VulkanBackend>],
+    state: &mut TrackState,
     buffers_pipeline: &mut Vec<(vk::Buffer, ResourceUsage)>,
     buffers_semaphores: &mut Vec<(vk::Buffer, usize, vk::PipelineStageFlags)>,
+    images_pipeline: &mut Vec<(vk::Image, usize, ResourceUsage)>,
 ) {
     for set in sets.into_iter() {
-        track_descriptor_set(set, buffers_pipeline, buffers_semaphores);
+        track_descriptor_set(
+            set,
+            state,
+            buffers_pipeline,
+            buffers_semaphores,
+            images_pipeline,
+        );
     }
 }
 
 unsafe fn track_descriptor_set(
     set: &DescriptorSet<crate::VulkanBackend>,
+    state: &mut TrackState,
     buffers_pipeline: &mut Vec<(vk::Buffer, ResourceUsage)>,
     buffers_semaphores: &mut Vec<(vk::Buffer, usize, vk::PipelineStageFlags)>,
+    images_pipeline: &mut Vec<(vk::Image, usize, ResourceUsage)>,
 ) {
     // Check every binding of every set
     for binding in &set.internal().bound {
@@ -351,9 +489,10 @@ unsafe fn track_descriptor_set(
         for elem in binding {
             // Only care about elements if they are filled
             if let Some(elem) = elem {
-                let usage = ResourceUsage {
+                let mut usage = ResourceUsage {
                     used: elem.stage,
                     access: elem.access,
+                    layout_transition: None,
                 };
                 match &elem.value {
                     BoundValue::UniformBuffer {
@@ -371,6 +510,54 @@ unsafe fn track_descriptor_set(
                     } => {
                         buffers_pipeline.push((*buffer, usage));
                         buffers_semaphores.push((*buffer, *array_element, elem.stage));
+                    }
+                    BoundValue::Texture {
+                        _ref_counter,
+                        image,
+                        view,
+                        array_element,
+                        aspect_mask,
+                        mip_count,
+                    } => {
+                        // Determine if a layout transition is needed
+                        usage.layout_transition = match state.resc_state.set_image(
+                            *image,
+                            *array_element,
+                            Some(LatestUsage {
+                                queue: state.queue_ty,
+                                value: state.target_value,
+                                layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                            }),
+                        ) {
+                            // If there was a previous usage, we only need to transition the layout if
+                            // it doesn't match the updated one
+                            Some(old_usage) => {
+                                old_usage.wait_if_needed(
+                                    state.semaphores,
+                                    state.queue_ty,
+                                    elem.stage,
+                                    state.main,
+                                    state.transfer,
+                                    state.compute,
+                                    state.present,
+                                );
+                                old_usage.needs_layout_transition(
+                                    *aspect_mask,
+                                    *mip_count,
+                                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                                )
+                            }
+                            // No old usage implies that the layout is undefined, and thus a transition is
+                            // needed
+                            None => Some(ImageLayoutTransition {
+                                old: vk::ImageLayout::UNDEFINED,
+                                new: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                                aspect_mask: *aspect_mask,
+                                mip_count: *mip_count,
+                            }),
+                        };
+
+                        images_pipeline.push((*image, *array_element, usage));
                     }
                 }
             }
