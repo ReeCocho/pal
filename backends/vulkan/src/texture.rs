@@ -11,7 +11,8 @@ use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, Allocator};
 
 pub struct Texture {
     pub(crate) image: vk::Image,
-    /// Image view for each array element.
+    /// Image view for each array element and mip level. This array is flattened as so.
+    /// A0M0 -> A0M1 -> A0M2 ... A1M0 -> A1M1 -> A1M2 -> ...
     pub(crate) views: Vec<vk::ImageView>,
     pub(crate) block: ManuallyDrop<Allocation>,
     pub(crate) image_usage: TextureUsage,
@@ -91,7 +92,7 @@ impl Texture {
         }
 
         // Create views
-        let mut views = Vec::with_capacity(create_info.array_elements);
+        let mut views = Vec::with_capacity(create_info.array_elements * create_info.mip_levels);
         let aspect_flags = if create_info.format.is_color() {
             vk::ImageAspectFlags::COLOR
         } else {
@@ -103,25 +104,27 @@ impl Texture {
                 }
         };
         for i in 0..create_info.array_elements {
-            let view_create_info = vk::ImageViewCreateInfo::builder()
-                .format(format)
-                .view_type(vk::ImageViewType::TYPE_2D)
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: aspect_flags,
-                    base_mip_level: 0,
-                    level_count: create_info.mip_levels as u32,
-                    base_array_layer: i as u32,
-                    layer_count: 1,
-                })
-                .components(vk::ComponentMapping {
-                    r: vk::ComponentSwizzle::R,
-                    g: vk::ComponentSwizzle::G,
-                    b: vk::ComponentSwizzle::B,
-                    a: vk::ComponentSwizzle::A,
-                })
-                .image(image)
-                .build();
-            views.push(device.create_image_view(&view_create_info, None).unwrap());
+            for j in 0..create_info.mip_levels {
+                let view_create_info = vk::ImageViewCreateInfo::builder()
+                    .format(format)
+                    .view_type(vk::ImageViewType::TYPE_2D)
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: aspect_flags,
+                        base_mip_level: j as u32,
+                        level_count: 1,
+                        base_array_layer: i as u32,
+                        layer_count: 1,
+                    })
+                    .components(vk::ComponentMapping {
+                        r: vk::ComponentSwizzle::R,
+                        g: vk::ComponentSwizzle::G,
+                        b: vk::ComponentSwizzle::B,
+                        a: vk::ComponentSwizzle::A,
+                    })
+                    .image(image)
+                    .build();
+                views.push(device.create_image_view(&view_create_info, None).unwrap());
+            }
         }
 
         // Setup debug name is requested

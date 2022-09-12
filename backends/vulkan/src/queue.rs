@@ -7,7 +7,6 @@ use crate::util::semaphores::{SemaphoreTracker, WaitInfo};
 
 pub(crate) struct VkQueue {
     pub queue: vk::Queue,
-    queue_family: u32,
     ty: QueueType,
     /// All commands submitted to this queue must be allocated from this pool.
     command_pool: vk::CommandPool,
@@ -17,8 +16,6 @@ pub(crate) struct VkQueue {
     command_buffer_count: usize,
     /// All work performed on this queue increments the value of this semaphore.
     semaphore: vk::Semaphore,
-    /// The last timeline semaphore value this queue was synced to.
-    last_sync: u64,
     /// The timeline semaphore value this queue will set when work is complete.
     target_value: u64,
 }
@@ -116,8 +113,6 @@ impl VkQueue {
             command_pool,
             free: VecDeque::default(),
             command_buffer_count: 0,
-            queue_family,
-            last_sync: 0,
             target_value: 0,
         })
     }

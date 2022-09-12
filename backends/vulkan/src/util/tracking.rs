@@ -2,18 +2,16 @@ use api::{
     command_buffer::{Command, CopyBufferToBuffer},
     descriptor_set::DescriptorSet,
     render_pass::{ColorAttachmentSource, RenderPassDescriptor},
-    types::QueueType,
 };
 
 use super::{
-    pipeline_tracker::{ImageLayoutTransition, PipelineTracker, ResourceUsage},
-    resource_state::{LatestUsage, ResourceState},
     semaphores::{SemaphoreTracker, WaitInfo},
+    usage::{PipelineTracker, SubResource, SubResourceUsage, UsageScope},
 };
-use crate::{descriptor_set::BoundValue, queue::VkQueue};
+use crate::descriptor_set::BoundValue;
 use ash::vk;
 
-pub(crate) struct TrackState<'a> {
+pub(crate) struct TrackState<'a, 'b> {
     pub device: &'a ash::Device,
     pub command_buffer: vk::CommandBuffer,
     /// Index of the command to detect the resources of.
@@ -21,20 +19,9 @@ pub(crate) struct TrackState<'a> {
     /// Command list with all commands of a submit.
     pub commands: &'a [Command<'a, crate::VulkanBackend>],
     /// Used to detect inter-command dependencies.
-    pub pipeline_tracker: &'a mut PipelineTracker,
-    /// Used to detect inter-queue dependencies.
-    pub resc_state: &'a mut ResourceState,
+    pub pipeline_tracker: &'a mut PipelineTracker<'b>,
     /// Used by `resc_state` to track inter-queue dependencies.
     pub semaphores: &'a mut SemaphoreTracker,
-    /// Queue type being used.
-    pub queue_ty: QueueType,
-    /// Target value of the queue being used (after these commands are submitted.)
-    pub target_value: u64,
-    // Queues
-    pub main: &'a VkQueue,
-    pub transfer: &'a VkQueue,
-    pub compute: &'a VkQueue,
-    pub present: &'a VkQueue,
 }
 
 /// Given the index of a command in a command list, tracks resources based off the type of
@@ -55,13 +42,11 @@ unsafe fn track_render_pass(
     state: &mut TrackState,
     descriptor: &RenderPassDescriptor<'_, crate::VulkanBackend>,
 ) {
-    let mut buffers_pipeline = Vec::default();
-    let mut images_pipeline = Vec::with_capacity(descriptor.color_attachments.len());
-    let mut buffers_semaphore = Vec::default();
+    let mut scope = UsageScope::default();
 
     // Track color attachments used in the pass
     for attachment in &descriptor.color_attachments {
-        let (image, array_elem, layout_transition) = match attachment.source {
+        let subresource = match attachment.source {
             ColorAttachmentSource::SurfaceImage(image) => {
                 // Surface image has special semaphores
                 let semaphores = image.internal().semaphores();
@@ -76,125 +61,53 @@ unsafe fn track_render_pass(
                     },
                 );
 
-                // No layout transition is needed for surface images because it is handled by the
-                // render pass.
-                (image.internal().image(), 0 as usize, None)
+                SubResource::Texture {
+                    texture: image.internal().image(),
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    array_elem: 0,
+                    mip_level: 0,
+                }
             }
             ColorAttachmentSource::Texture {
                 texture,
                 array_element,
-            } => {
-                // Determine if a layout transition is needed
-                let transition = match state.resc_state.set_image(
-                    texture.internal().image,
-                    array_element,
-                    Some(LatestUsage {
-                        queue: state.queue_ty,
-                        value: state.target_value,
-                        layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                    }),
-                ) {
-                    // If there was a previous usage, we only need to transition the layout if
-                    // it doesn't match the updated one
-                    Some(old_usage) => {
-                        old_usage.wait_if_needed(
-                            state.semaphores,
-                            state.queue_ty,
-                            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                            state.main,
-                            state.transfer,
-                            state.compute,
-                            state.present,
-                        );
-                        old_usage.needs_layout_transition(
-                            texture.internal().aspect_flags,
-                            texture.internal().mip_count as u32,
-                            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                        )
-                    }
-                    // No old usage implies that the layout is undefined, and thus a transition is
-                    // needed
-                    None => Some(ImageLayoutTransition {
-                        old: vk::ImageLayout::UNDEFINED,
-                        new: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                        aspect_mask: texture.internal().aspect_flags,
-                        mip_count: texture.internal().mip_count,
-                    }),
-                };
-
-                (texture.internal().image, array_element, transition)
-            }
+                mip_level,
+            } => SubResource::Texture {
+                texture: texture.internal().image,
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                array_elem: array_element as u32,
+                mip_level: mip_level as u32,
+            },
         };
-        images_pipeline.push((
-            image,
-            array_elem,
-            ResourceUsage {
-                used: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+        scope.use_resource(
+            subresource,
+            SubResourceUsage {
                 access: vk::AccessFlags::COLOR_ATTACHMENT_WRITE
                     | vk::AccessFlags::COLOR_ATTACHMENT_READ,
-
-                layout_transition,
+                stage: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             },
-        ));
+        );
     }
 
     // Track depth stencil attachment
     if let Some(attachment) = &descriptor.depth_stencil_attachment {
-        let (image, array_elem, layout_transition) = {
-            let internal = attachment.texture.internal();
-
-            // Determine if a layout transition is needed
-            let transition = match state.resc_state.set_image(
-                internal.image,
-                attachment.array_element,
-                Some(LatestUsage {
-                    queue: state.queue_ty,
-                    value: state.target_value,
-                    layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                }),
-            ) {
-                // If there was a previous usage, we only need to transition the layout if
-                // it doesn't match the updated one
-                Some(old_usage) => {
-                    old_usage.wait_if_needed(
-                        state.semaphores,
-                        state.queue_ty,
-                        vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
-                            | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-                        state.main,
-                        state.transfer,
-                        state.compute,
-                        state.present,
-                    );
-                    old_usage.needs_layout_transition(
-                        internal.aspect_flags,
-                        internal.mip_count as u32,
-                        vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                    )
-                }
-                // No old usage implies that the layout is undefined, and thus a transition is
-                // needed
-                None => Some(ImageLayoutTransition {
-                    old: vk::ImageLayout::UNDEFINED,
-                    new: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                    aspect_mask: internal.aspect_flags,
-                    mip_count: internal.mip_count,
-                }),
-            };
-
-            (internal.image, attachment.array_element, transition)
-        };
-        images_pipeline.push((
-            image,
-            array_elem,
-            ResourceUsage {
-                used: vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
-                    | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-                access: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE
-                    | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ,
-                layout_transition,
+        let internal = attachment.texture.internal();
+        scope.use_resource(
+            SubResource::Texture {
+                texture: internal.image,
+                aspect_mask: internal.aspect_flags,
+                array_elem: attachment.array_element as u32,
+                mip_level: attachment.mip_level as u32,
             },
-        ));
+            SubResourceUsage {
+                access: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
+                    | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                stage: vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                    | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            },
+        );
     }
 
     // Track everything else
@@ -202,19 +115,17 @@ unsafe fn track_render_pass(
         match command {
             Command::BindVertexBuffers { binds, .. } => {
                 for bind in binds {
-                    buffers_pipeline.push((
-                        bind.buffer.internal().buffer,
-                        ResourceUsage {
-                            used: vk::PipelineStageFlags::VERTEX_INPUT,
-                            access: vk::AccessFlags::VERTEX_ATTRIBUTE_READ,
-                            layout_transition: None,
+                    scope.use_resource(
+                        SubResource::Buffer {
+                            buffer: bind.buffer.internal().buffer,
+                            array_elem: bind.array_element as u32,
                         },
-                    ));
-                    buffers_semaphore.push((
-                        bind.buffer.internal().buffer,
-                        bind.array_element,
-                        vk::PipelineStageFlags::VERTEX_INPUT,
-                    ));
+                        SubResourceUsage {
+                            access: vk::AccessFlags::VERTEX_ATTRIBUTE_READ,
+                            stage: vk::PipelineStageFlags::VERTEX_INPUT,
+                            layout: vk::ImageLayout::UNDEFINED,
+                        },
+                    );
                 }
             }
             Command::BindIndexBuffer {
@@ -222,62 +133,29 @@ unsafe fn track_render_pass(
                 array_element,
                 ..
             } => {
-                buffers_pipeline.push((
-                    buffer.internal().buffer,
-                    ResourceUsage {
-                        used: vk::PipelineStageFlags::VERTEX_INPUT,
-                        access: vk::AccessFlags::INDEX_READ,
-                        layout_transition: None,
+                scope.use_resource(
+                    SubResource::Buffer {
+                        buffer: buffer.internal().buffer,
+                        array_elem: *array_element as u32,
                     },
-                ));
-                buffers_semaphore.push((
-                    buffer.internal().buffer,
-                    *array_element,
-                    vk::PipelineStageFlags::VERTEX_INPUT,
-                ));
+                    SubResourceUsage {
+                        access: vk::AccessFlags::INDEX_READ,
+                        stage: vk::PipelineStageFlags::VERTEX_INPUT,
+                        layout: vk::ImageLayout::UNDEFINED,
+                    },
+                );
             }
             Command::BindDescriptorSets { sets, .. } => {
-                track_descriptor_sets(
-                    sets,
-                    state,
-                    &mut buffers_pipeline,
-                    &mut buffers_semaphore,
-                    &mut images_pipeline,
-                );
+                track_descriptor_sets(sets, &mut scope);
             }
             Command::EndRenderPass => break,
             _ => {}
         }
     }
 
-    // Submit pipeline values
-    if let Some(barrier) = state
-        .pipeline_tracker
-        .update(&buffers_pipeline, &images_pipeline)
-    {
-        barrier.execute(&state.device, state.command_buffer);
-    }
-
-    for (buffer, array_elem, stage) in buffers_semaphore {
-        if let Some(old) = state.resc_state.set_buffer(
-            buffer,
-            array_elem,
-            Some(LatestUsage {
-                queue: state.queue_ty,
-                value: state.target_value,
-                layout: vk::ImageLayout::UNDEFINED,
-            }),
-        ) {
-            old.wait_if_needed(
-                state.semaphores,
-                state.queue_ty,
-                stage,
-                state.main,
-                state.transfer,
-                state.compute,
-                state.present,
-            );
-        }
+    // Submit usage scope
+    if let Some(barrier) = state.pipeline_tracker.submit(scope) {
+        barrier.execute(state.device, state.command_buffer);
     }
 }
 
@@ -316,11 +194,9 @@ unsafe fn track_dispatch(state: &mut TrackState) {
         bound
     };
 
-    // Determine which sets are actually used
-    let mut buffers_pipeline = Vec::default();
-    let mut images_pipeline = Vec::default();
-    let mut buffers_semaphore = Vec::default();
+    let mut scope = UsageScope::default();
 
+    // Determine which sets are actually used
     for command in state.commands[idx..=state.index].iter().rev() {
         // Break early if every set is bound
         if total_bound == bound.len() {
@@ -341,47 +217,15 @@ unsafe fn track_dispatch(state: &mut TrackState) {
             }
 
             // Track
-            track_descriptor_set(
-                sets[i],
-                state,
-                &mut buffers_pipeline,
-                &mut buffers_semaphore,
-                &mut images_pipeline,
-            );
+            track_descriptor_set(sets[i], &mut scope);
             bound[set_slot] = true;
             total_bound += 1;
         }
     }
 
     // Submit pipeline values
-    if let Some(barrier) = state
-        .pipeline_tracker
-        .update(&buffers_pipeline, &images_pipeline)
-    {
-        barrier.execute(&state.device, state.command_buffer);
-    }
-
-    // Submit semaphore values
-    for (buffer, array_elem, stage) in buffers_semaphore {
-        if let Some(old) = state.resc_state.set_buffer(
-            buffer,
-            array_elem,
-            Some(LatestUsage {
-                queue: state.queue_ty,
-                value: state.target_value,
-                layout: vk::ImageLayout::UNDEFINED,
-            }),
-        ) {
-            old.wait_if_needed(
-                state.semaphores,
-                state.queue_ty,
-                stage,
-                state.main,
-                state.transfer,
-                state.compute,
-                state.present,
-            );
-        }
+    if let Some(barrier) = state.pipeline_tracker.submit(scope) {
+        barrier.execute(state.device, state.command_buffer);
     }
 }
 
@@ -392,172 +236,106 @@ unsafe fn track_buffer_to_buffer_copy(
     // Barrier check
     let src = copy.src.internal();
     let dst = copy.dst.internal();
-    if let Some(barrier) = state.pipeline_tracker.update(
-        &[
-            (
-                src.buffer,
-                ResourceUsage {
-                    used: vk::PipelineStageFlags::TRANSFER,
-                    access: vk::AccessFlags::TRANSFER_READ,
-                    layout_transition: None,
-                },
-            ),
-            (
-                dst.buffer,
-                ResourceUsage {
-                    used: vk::PipelineStageFlags::TRANSFER,
-                    access: vk::AccessFlags::TRANSFER_WRITE,
-                    layout_transition: None,
-                },
-            ),
-        ],
-        &[],
-    ) {
-        barrier.execute(&state.device, state.command_buffer);
-    }
-
-    // Semaphore check
-    if let Some(old) = state.resc_state.set_buffer(
-        src.buffer,
-        copy.src_array_element,
-        Some(LatestUsage {
-            queue: state.queue_ty,
-            value: state.target_value,
+    let mut scope = UsageScope::default();
+    scope.use_resource(
+        SubResource::Buffer {
+            buffer: src.buffer,
+            array_elem: copy.src_array_element as u32,
+        },
+        SubResourceUsage {
+            access: vk::AccessFlags::TRANSFER_READ,
+            stage: vk::PipelineStageFlags::TRANSFER,
             layout: vk::ImageLayout::UNDEFINED,
-        }),
-    ) {
-        old.wait_if_needed(
-            state.semaphores,
-            state.queue_ty,
-            vk::PipelineStageFlags::TRANSFER,
-            state.main,
-            state.transfer,
-            state.compute,
-            state.present,
-        );
-    }
-
-    if let Some(old) = state.resc_state.set_buffer(
-        dst.buffer,
-        copy.dst_array_element,
-        Some(LatestUsage {
-            queue: state.queue_ty,
-            value: state.target_value,
+        },
+    );
+    scope.use_resource(
+        SubResource::Buffer {
+            buffer: dst.buffer,
+            array_elem: copy.dst_array_element as u32,
+        },
+        SubResourceUsage {
+            access: vk::AccessFlags::TRANSFER_WRITE,
+            stage: vk::PipelineStageFlags::TRANSFER,
             layout: vk::ImageLayout::UNDEFINED,
-        }),
-    ) {
-        old.wait_if_needed(
-            state.semaphores,
-            state.queue_ty,
-            vk::PipelineStageFlags::TRANSFER,
-            state.main,
-            state.transfer,
-            state.compute,
-            state.present,
-        );
+        },
+    );
+
+    if let Some(barrier) = state.pipeline_tracker.submit(scope) {
+        barrier.execute(state.device, state.command_buffer);
     }
 }
 
 unsafe fn track_descriptor_sets(
     sets: &[&DescriptorSet<crate::VulkanBackend>],
-    state: &mut TrackState,
-    buffers_pipeline: &mut Vec<(vk::Buffer, ResourceUsage)>,
-    buffers_semaphores: &mut Vec<(vk::Buffer, usize, vk::PipelineStageFlags)>,
-    images_pipeline: &mut Vec<(vk::Image, usize, ResourceUsage)>,
+    scope: &mut UsageScope,
 ) {
     for set in sets.into_iter() {
-        track_descriptor_set(
-            set,
-            state,
-            buffers_pipeline,
-            buffers_semaphores,
-            images_pipeline,
-        );
+        track_descriptor_set(set, scope);
     }
 }
 
-unsafe fn track_descriptor_set(
-    set: &DescriptorSet<crate::VulkanBackend>,
-    state: &mut TrackState,
-    buffers_pipeline: &mut Vec<(vk::Buffer, ResourceUsage)>,
-    buffers_semaphores: &mut Vec<(vk::Buffer, usize, vk::PipelineStageFlags)>,
-    images_pipeline: &mut Vec<(vk::Image, usize, ResourceUsage)>,
-) {
+unsafe fn track_descriptor_set(set: &DescriptorSet<crate::VulkanBackend>, scope: &mut UsageScope) {
     // Check every binding of every set
     for binding in &set.internal().bound {
         // Check every element of every binding
         for elem in binding {
             // Only care about elements if they are filled
             if let Some(elem) = elem {
-                let mut usage = ResourceUsage {
-                    used: elem.stage,
-                    access: elem.access,
-                    layout_transition: None,
-                };
                 match &elem.value {
                     BoundValue::UniformBuffer {
                         buffer,
                         array_element,
                         ..
-                    } => {
-                        buffers_pipeline.push((*buffer, usage));
-                        buffers_semaphores.push((*buffer, *array_element, elem.stage));
-                    }
+                    } => scope.use_resource(
+                        SubResource::Buffer {
+                            buffer: *buffer,
+                            array_elem: *array_element as u32,
+                        },
+                        SubResourceUsage {
+                            access: elem.access,
+                            stage: elem.stage,
+                            layout: vk::ImageLayout::UNDEFINED,
+                        },
+                    ),
                     BoundValue::StorageBuffer {
                         buffer,
                         array_element,
                         ..
-                    } => {
-                        buffers_pipeline.push((*buffer, usage));
-                        buffers_semaphores.push((*buffer, *array_element, elem.stage));
-                    }
+                    } => scope.use_resource(
+                        SubResource::Buffer {
+                            buffer: *buffer,
+                            array_elem: *array_element as u32,
+                        },
+                        SubResourceUsage {
+                            access: elem.access,
+                            stage: elem.stage,
+                            layout: vk::ImageLayout::UNDEFINED,
+                        },
+                    ),
+                    // Textures require that you register each mip individually
                     BoundValue::Texture {
                         _ref_counter,
                         image,
-                        view,
                         array_element,
                         aspect_mask,
                         mip_count,
+                        ..
                     } => {
-                        // Determine if a layout transition is needed
-                        usage.layout_transition = match state.resc_state.set_image(
-                            *image,
-                            *array_element,
-                            Some(LatestUsage {
-                                queue: state.queue_ty,
-                                value: state.target_value,
-                                layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                            }),
-                        ) {
-                            // If there was a previous usage, we only need to transition the layout if
-                            // it doesn't match the updated one
-                            Some(old_usage) => {
-                                old_usage.wait_if_needed(
-                                    state.semaphores,
-                                    state.queue_ty,
-                                    elem.stage,
-                                    state.main,
-                                    state.transfer,
-                                    state.compute,
-                                    state.present,
-                                );
-                                old_usage.needs_layout_transition(
-                                    *aspect_mask,
-                                    *mip_count,
-                                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                                )
-                            }
-                            // No old usage implies that the layout is undefined, and thus a transition is
-                            // needed
-                            None => Some(ImageLayoutTransition {
-                                old: vk::ImageLayout::UNDEFINED,
-                                new: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                                aspect_mask: *aspect_mask,
-                                mip_count: *mip_count,
-                            }),
-                        };
-
-                        images_pipeline.push((*image, *array_element, usage));
+                        for i in 0..*mip_count {
+                            scope.use_resource(
+                                SubResource::Texture {
+                                    texture: *image,
+                                    aspect_mask: *aspect_mask,
+                                    array_elem: *array_element as u32,
+                                    mip_level: i,
+                                },
+                                SubResourceUsage {
+                                    access: elem.access,
+                                    stage: elem.stage,
+                                    layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                                },
+                            )
+                        }
                     }
                 }
             }

@@ -5,11 +5,11 @@ use gpu_allocator::MemoryLocation;
 pub mod descriptor_pool;
 pub mod garbage_collector;
 pub mod pipeline_cache;
-pub mod pipeline_tracker;
-pub mod resource_state;
 pub mod sampler_cache;
 pub mod semaphores;
 pub mod tracking;
+
+pub mod usage;
 
 #[inline(always)]
 pub(crate) fn rank_pipeline_stage(stage: vk::PipelineStageFlags) -> u32 {

@@ -427,6 +427,7 @@ fn main() {
                                 source: ColorAttachmentSource::Texture {
                                     texture: &triangle_texture,
                                     array_element: 0,
+                                    mip_level: 0,
                                 },
                                 load_op: LoadOp::Clear(ClearColor::RgbaF32(0.0, 0.0, 0.0, 0.0)),
                                 store_op: StoreOp::Store,
@@ -459,6 +460,7 @@ fn main() {
                             depth_stencil_attachment: Some(DepthStencilAttachment {
                                 texture: &depth_buffer,
                                 array_element: 0,
+                                mip_level: 0,
                                 load_op: LoadOp::Clear(ClearColor::D32S32(1.0, 0)),
                                 store_op: StoreOp::DontCare,
                             }),

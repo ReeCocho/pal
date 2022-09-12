@@ -25,12 +25,14 @@ pub enum ColorAttachmentSource<'a, B: Backend> {
     Texture {
         texture: &'a Texture<B>,
         array_element: usize,
+        mip_level: usize,
     },
 }
 
 pub struct DepthStencilAttachment<'a, B: Backend> {
     pub texture: &'a Texture<B>,
     pub array_element: usize,
+    pub mip_level: usize,
     pub load_op: LoadOp,
     pub store_op: StoreOp,
 }

@@ -44,11 +44,10 @@ use util::{
     descriptor_pool::DescriptorPools,
     garbage_collector::{GarbageCollector, TimelineValues},
     pipeline_cache::PipelineCache,
-    pipeline_tracker::PipelineTracker,
-    resource_state::ResourceState,
     sampler_cache::SamplerCache,
-    semaphores::SemaphoreTracker,
+    semaphores::{SemaphoreTracker, WaitInfo},
     tracking::TrackState,
+    usage::{GlobalResourceUsage, PipelineTracker},
 };
 
 pub mod buffer;
@@ -102,7 +101,7 @@ pub struct VulkanBackend {
     pub(crate) render_passes: RenderPassCache,
     pub(crate) framebuffers: FramebufferCache,
     pub(crate) garbage: GarbageCollector,
-    pub(crate) resource_state: ShardedLock<ResourceState>,
+    pub(crate) resource_state: ShardedLock<GlobalResourceUsage>,
     pub(crate) pools: Mutex<DescriptorPools>,
     pub(crate) pipelines: Mutex<PipelineCache>,
     pub(crate) samplers: Mutex<SamplerCache>,
@@ -230,6 +229,14 @@ impl Backend for VulkanBackend {
             transfer: transfer.target_timeline_value(),
             compute: compute.target_timeline_value(),
         };
+        let next_target_value = match queue {
+            QueueType::Main => &main,
+            QueueType::Transfer => &transfer,
+            QueueType::Compute => &compute,
+            QueueType::Present => &present,
+        }
+        .target_timeline_value()
+            + 1;
         self.garbage.cleanup(
             &self.device,
             &mut allocator,
@@ -243,15 +250,7 @@ impl Backend for VulkanBackend {
         let mut semaphore_tracker = SemaphoreTracker::default();
         let mut active_render_pass = vk::RenderPass::null();
         let mut active_layout = vk::PipelineLayout::null();
-        let mut pipeline_tracker = PipelineTracker::default();
-        let next_target_value = match queue {
-            QueueType::Main => &main,
-            QueueType::Transfer => &transfer,
-            QueueType::Compute => &compute,
-            QueueType::Present => &present,
-        }
-        .target_timeline_value()
-            + 1;
+        let mut pipeline_tracker = PipelineTracker::new(&mut resc_state, queue, next_target_value);
 
         // Acquire a command buffer from the queue
         let cb = match queue {
@@ -284,14 +283,7 @@ impl Backend for VulkanBackend {
                 index: i,
                 commands: &commands,
                 pipeline_tracker: &mut pipeline_tracker,
-                resc_state: &mut resc_state,
                 semaphores: &mut semaphore_tracker,
-                queue_ty: queue,
-                target_value: next_target_value,
-                main: &main,
-                transfer: &transfer,
-                compute: &compute,
-                present: &present,
             });
 
             // Perform command operations
@@ -314,9 +306,12 @@ impl Backend for VulkanBackend {
                             ColorAttachmentSource::Texture {
                                 texture,
                                 array_element,
+                                mip_level,
                             } => {
+                                let internal = texture.internal();
                                 dims = (texture.dims().0, texture.dims().1);
-                                texture.internal().views[*array_element]
+                                texture.internal().views
+                                    [(*array_element * internal.array_elements) + *mip_level]
                             }
                         });
                     }
@@ -513,6 +508,23 @@ impl Backend for VulkanBackend {
             }
         }
 
+        // Grab detected semaphores
+        for (queue, stage) in pipeline_tracker.wait_queues() {
+            let (semaphore, value) = match *queue {
+                QueueType::Main => (main.semaphore(), target_values.main),
+                QueueType::Transfer => (transfer.semaphore(), target_values.transfer),
+                QueueType::Compute => (compute.semaphore(), target_values.compute),
+                QueueType::Present => unreachable!(),
+            };
+            semaphore_tracker.register_wait(
+                semaphore,
+                WaitInfo {
+                    value: Some(value),
+                    stage: *stage,
+                },
+            );
+        }
+
         // Submit to the queue
         if debug_name.is_some() {
             if let Some((debug, _)) = &self.debug {
@@ -686,7 +698,7 @@ impl Backend for VulkanBackend {
         // Handled in drop
     }
 
-    unsafe fn destroy_texture(&self, id: &mut Self::Texture) {
+    unsafe fn destroy_texture(&self, _id: &mut Self::Texture) {
         // Handled in drop
     }
 
@@ -1008,7 +1020,7 @@ impl VulkanBackend {
             render_passes: RenderPassCache::default(),
             framebuffers: FramebufferCache::default(),
             garbage: GarbageCollector::new(),
-            resource_state: ShardedLock::new(ResourceState::default()),
+            resource_state: ShardedLock::new(GlobalResourceUsage::default()),
             pools: Mutex::new(DescriptorPools::default()),
             pipelines: Mutex::new(PipelineCache::default()),
             samplers: Mutex::new(SamplerCache::default()),

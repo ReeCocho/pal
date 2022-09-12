@@ -141,11 +141,11 @@ impl Buffer {
         // NOTE: The reason we set the usage to `None` is because we have to wait for the previous
         // usage to complete. This implies that no one is using this buffer anymore and thus no
         // waits are further needed.
-        if let Some(old) = resc_state.set_buffer(self.buffer, idx, None) {
+        if let Some(old) = resc_state.register_buffer(self.buffer, idx as u32, None) {
             ctx.wait_on(
                 &Job {
                     ty: old.queue,
-                    target_value: old.value,
+                    target_value: old.timeline_value,
                 },
                 None,
             );
