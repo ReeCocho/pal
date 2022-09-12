@@ -1,4 +1,10 @@
-use std::sync::Mutex;
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Mutex,
+    },
+};
 
 use ash::vk;
 use crossbeam_channel::{Receiver, Sender};
@@ -10,12 +16,16 @@ use crate::{
     texture::TextureRefCounter,
 };
 
-use super::{descriptor_pool::DescriptorPools, pipeline_cache::PipelineCache};
+use super::{
+    descriptor_pool::DescriptorPools, fast_int_hasher::FIHashMap, pipeline_cache::PipelineCache,
+};
 
 pub(crate) struct GarbageCollector {
     sender: Sender<Garbage>,
     receiver: Receiver<Garbage>,
-    to_destroy: Mutex<Vec<ToDestroy>>,
+    garbage_id: AtomicU32,
+    to_destroy: Mutex<FIHashMap<u32, ToDestroy>>,
+    marked: Mutex<Vec<u32>>,
 }
 
 pub(crate) enum Garbage {
@@ -57,7 +67,9 @@ impl GarbageCollector {
         Self {
             sender,
             receiver,
-            to_destroy: Mutex::new(Vec::default()),
+            to_destroy: Mutex::new(HashMap::default()),
+            garbage_id: AtomicU32::new(0),
+            marked: Mutex::new(Vec::default()),
         }
     }
 
@@ -94,15 +106,20 @@ impl GarbageCollector {
         // Receive all incoming garbage
         let mut to_destroy = self.to_destroy.lock().unwrap();
         while let Ok(garbage) = self.receiver.try_recv() {
-            to_destroy.push(ToDestroy {
-                garbage,
-                values: target,
-            });
+            let id = self.garbage_id.fetch_add(1, Ordering::Relaxed);
+            to_destroy.insert(
+                id,
+                ToDestroy {
+                    garbage,
+                    values: target,
+                },
+            );
         }
 
         // Mark everything that is not being used by any queue
-        let mut marked = Vec::default();
-        for (i, garbage) in to_destroy.iter().enumerate() {
+        let mut marked = self.marked.lock().unwrap();
+        marked.clear();
+        for (id, garbage) in to_destroy.iter() {
             match &garbage.garbage {
                 Garbage::Buffer { ref_counter, .. } => {
                     if !ref_counter.is_last() {
@@ -121,14 +138,13 @@ impl GarbageCollector {
                 && garbage.values.transfer <= current.transfer
                 && garbage.values.compute <= current.compute
             {
-                marked.push(i);
+                marked.push(*id);
             }
         }
 
         // Remove marked elements from the list
-        marked.sort_unstable();
-        for i in marked.into_iter().rev() {
-            match to_destroy.remove(i).garbage {
+        for id in marked.iter().rev() {
+            match to_destroy.remove(id).unwrap().garbage {
                 Garbage::PipelineLayout(layout) => {
                     // Also destroy associated pipelines
                     pipelines.release(device, layout);

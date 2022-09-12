@@ -5,7 +5,22 @@ use api::{
     types::LoadOp,
 };
 use ash::vk;
+use bytemuck::{Pod, Zeroable};
 use dashmap::DashMap;
+use fxhash::FxHashMap;
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct DrawIndexedIndirect {
+    pub index_count: u32,
+    pub instance_count: u32,
+    pub first_index: u32,
+    pub vertex_offset: i32,
+    pub first_instance: u32,
+}
+
+unsafe impl Pod for DrawIndexedIndirect {}
+unsafe impl Zeroable for DrawIndexedIndirect {}
 
 #[derive(Default)]
 pub(crate) struct RenderPassCache {
@@ -24,7 +39,7 @@ pub(crate) struct FramebufferCache {
 pub(crate) struct Framebuffers {
     pass: vk::RenderPass,
     /// Maps an ordered set of images to a framebuffer.
-    framebuffers: HashMap<Vec<vk::ImageView>, vk::Framebuffer>,
+    framebuffers: FxHashMap<Vec<vk::ImageView>, vk::Framebuffer>,
 }
 
 #[derive(Default, Hash, PartialEq, Eq)]

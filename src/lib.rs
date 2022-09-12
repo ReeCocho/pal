@@ -15,6 +15,7 @@ pub mod prelude {
     };
 
     // Render pass
+    pub type DrawIndexedIndirect = <crate::Backend as api::Backend>::DrawIndexedIndirect;
     pub use api::render_pass::{
         ColorAttachment, ColorAttachmentSource, DepthStencilAttachment, RenderPass,
         RenderPassDescriptor, VertexBind,

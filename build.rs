@@ -32,6 +32,14 @@ fn main() {
         Path::new("./examples/shaders/index_compute.comp"),
         Path::new("./examples/shaders/"),
     );
+    compile(
+        Path::new("./examples/shaders/test1_pal.comp"),
+        Path::new("./examples/shaders/"),
+    );
+    compile(
+        Path::new("./examples/shaders/test1_wgpu.comp"),
+        Path::new("./examples/shaders/"),
+    );
 }
 
 fn compile(in_path: &Path, out_path: &Path) {

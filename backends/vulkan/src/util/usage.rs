@@ -2,17 +2,21 @@ use std::collections::{hash_map::Iter, HashMap};
 
 use api::types::QueueType;
 use ash::vk;
+use fxhash::FxHashMap;
+
+use super::fast_int_hasher::FIHashMap;
 
 /// This keeps track of which queues and when buffers and images are used in. Additionally, it
 /// keeps track of the layouts of images on a per-mip level.
 #[derive(Default)]
 pub(crate) struct GlobalResourceUsage {
+    sets: FIHashMap<vk::DescriptorSet, QueueUsage>,
     /// Buffer + array element.
-    buffers: HashMap<(vk::Buffer, u32), QueueUsage>,
+    buffers: FxHashMap<(vk::Buffer, u32), QueueUsage>,
     /// Texture + array element.
-    images: HashMap<(vk::Image, u32), QueueUsage>,
+    images: FxHashMap<(vk::Image, u32), QueueUsage>,
     /// Texture + array element + mip level.
-    image_layouts: HashMap<(vk::Image, u32, u32), vk::ImageLayout>,
+    image_layouts: FxHashMap<(vk::Image, u32, u32), vk::ImageLayout>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -25,13 +29,13 @@ pub(crate) struct PipelineTracker<'a> {
     global: &'a mut GlobalResourceUsage,
     queue_ty: QueueType,
     next_value: u64,
-    usages: HashMap<SubResource, SubResourceUsage>,
-    queues: HashMap<QueueType, vk::PipelineStageFlags>,
+    usages: FxHashMap<SubResource, SubResourceUsage>,
+    queues: FIHashMap<QueueType, vk::PipelineStageFlags>,
 }
 
 #[derive(Default)]
 pub(crate) struct UsageScope {
-    usages: HashMap<SubResource, SubResourceUsage>,
+    usages: FxHashMap<SubResource, SubResourceUsage>,
 }
 
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -65,6 +69,18 @@ pub(crate) struct PipelineBarrier {
 }
 
 impl GlobalResourceUsage {
+    #[inline(always)]
+    pub fn register_set(
+        &mut self,
+        set: vk::DescriptorSet,
+        usage: Option<QueueUsage>,
+    ) -> Option<QueueUsage> {
+        match usage {
+            Some(usage) => self.sets.insert(set, usage),
+            None => self.sets.remove(&set),
+        }
+    }
+
     #[inline(always)]
     pub fn register_buffer(
         &mut self,
@@ -132,10 +148,11 @@ impl<'a> PipelineTracker<'a> {
 
         // Keeps track of which image subresources need memor barriers and/or layout transitions
         let mut image_barriers =
-            HashMap::<(vk::Image, u32, u32), vk::ImageMemoryBarrier>::default();
+            FxHashMap::<(vk::Image, u32, u32), vk::ImageMemoryBarrier>::default();
 
         // Keeps track of which buffers need memory barriers
-        let mut buffer_barriers = HashMap::<(vk::Buffer, u32), vk::BufferMemoryBarrier>::default();
+        let mut buffer_barriers =
+            FxHashMap::<(vk::Buffer, u32), vk::BufferMemoryBarrier>::default();
 
         // Analyze each usage
         for (resource, usage) in scope.usages {

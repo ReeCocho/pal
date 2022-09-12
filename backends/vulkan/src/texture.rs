@@ -11,7 +11,7 @@ use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, Allocator};
 
 pub struct Texture {
     pub(crate) image: vk::Image,
-    /// Image view for each array element and mip level. This array is flattened as so.
+    /// Image view for each array element and mip level. This array is flattened like so.
     /// A0M0 -> A0M1 -> A0M2 ... A1M0 -> A1M1 -> A1M2 -> ...
     pub(crate) views: Vec<vk::ImageView>,
     pub(crate) block: ManuallyDrop<Allocation>,

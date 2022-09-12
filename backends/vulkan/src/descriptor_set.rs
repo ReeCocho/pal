@@ -5,16 +5,19 @@ use api::{
         DescriptorType, DescriptorValue,
     },
     types::{AccessType, ShaderStage},
+    Backend,
 };
 use ash::vk;
 use crossbeam_channel::Sender;
 
 use crate::{
     buffer::BufferRefCounter,
+    job::Job,
     texture::TextureRefCounter,
     util::{
         descriptor_pool::DescriptorPools, garbage_collector::Garbage, sampler_cache::SamplerCache,
     },
+    VulkanBackend,
 };
 
 pub struct DescriptorSet {
@@ -108,11 +111,27 @@ impl DescriptorSet {
 
     pub(crate) unsafe fn update(
         &mut self,
-        device: &ash::Device,
+        ctx: &VulkanBackend,
         layout: &DescriptorSetLayout,
-        sampler_cache: &mut SamplerCache,
         updates: &[DescriptorSetUpdate<crate::VulkanBackend>],
     ) {
+        // Wait until the last queue that the buffer was used in has finished it's work
+        let mut resc_state = ctx.resource_state.write().unwrap();
+        let mut sampler_cache = ctx.samplers.lock().unwrap();
+
+        // NOTE: The reason we set the usage to `None` is because we have to wait for the previous
+        // usage to complete. This implies that no one is using this set anymore and thus no
+        // waits are further needed.
+        if let Some(old) = resc_state.register_set(self.set, None) {
+            ctx.wait_on(
+                &Job {
+                    ty: old.queue,
+                    target_value: old.timeline_value,
+                },
+                None,
+            );
+        }
+
         let mut writes = Vec::with_capacity(updates.len());
         let mut buffers = Vec::with_capacity(updates.len());
         let mut images = Vec::with_capacity(updates.len());
@@ -124,7 +143,7 @@ impl DescriptorSet {
                     // It's safe to destroy the image view now because we guarantee the set is not
                     // being used by
                     BoundValue::Texture { view, .. } => {
-                        device.destroy_image_view(view, None);
+                        ctx.device.destroy_image_view(view, None);
                     }
                     _ => {}
                 }
@@ -246,11 +265,11 @@ impl DescriptorSet {
                             .image(texture.image)
                             .build();
 
-                        let view = device.create_image_view(&create_info, None).unwrap();
+                        let view = ctx.device.create_image_view(&create_info, None).unwrap();
 
                         images.push(
                             vk::DescriptorImageInfo::builder()
-                                .sampler(sampler_cache.get(device, *sampler))
+                                .sampler(sampler_cache.get(&ctx.device, *sampler))
                                 .image_view(view)
                                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                                 .build(),
@@ -283,7 +302,7 @@ impl DescriptorSet {
             });
         }
 
-        device.update_descriptor_sets(&writes, &[]);
+        ctx.device.update_descriptor_sets(&writes, &[]);
     }
 }
 

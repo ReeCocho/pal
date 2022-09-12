@@ -42,12 +42,25 @@ pub enum Command<'a, B: Backend> {
         offset: u64,
         ty: IndexType,
     },
+    Draw {
+        vertex_count: usize,
+        instance_count: usize,
+        first_vertex: usize,
+        first_instance: usize,
+    },
     DrawIndexed {
         index_count: usize,
         instance_count: usize,
         first_index: usize,
         vertex_offset: isize,
         first_instance: usize,
+    },
+    DrawIndexedIndirect {
+        buffer: &'a Buffer<B>,
+        array_element: usize,
+        offset: u64,
+        draw_count: usize,
+        stride: u64,
     },
     CopyBufferToBuffer(CopyBufferToBuffer<'a, B>),
 }

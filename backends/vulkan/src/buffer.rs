@@ -130,6 +130,11 @@ impl Buffer {
         })
     }
 
+    #[inline(always)]
+    pub(crate) fn offset(&self, array_element: usize) -> u64 {
+        self.aligned_size * array_element as u64
+    }
+
     pub(crate) unsafe fn map(
         &self,
         ctx: &VulkanBackend,

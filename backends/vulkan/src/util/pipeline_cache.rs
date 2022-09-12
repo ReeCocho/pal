@@ -1,10 +1,10 @@
+use super::fast_int_hasher::FIHashMap;
 use ash::vk;
-use std::collections::HashMap;
 
 #[derive(Default)]
 pub(crate) struct PipelineCache {
     /// Given a pipeline layout and render pass, produces a unique matching pipeline.
-    pipelines: HashMap<vk::PipelineLayout, HashMap<vk::RenderPass, vk::Pipeline>>,
+    pipelines: FIHashMap<vk::PipelineLayout, FIHashMap<vk::RenderPass, vk::Pipeline>>,
 }
 
 impl PipelineCache {

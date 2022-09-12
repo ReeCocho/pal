@@ -3,6 +3,7 @@ use ash::vk;
 use gpu_allocator::MemoryLocation;
 
 pub mod descriptor_pool;
+pub mod fast_int_hasher;
 pub mod garbage_collector;
 pub mod pipeline_cache;
 pub mod sampler_cache;
@@ -21,8 +22,8 @@ pub(crate) fn rank_pipeline_stage(stage: vk::PipelineStageFlags) -> u32 {
         vk::PipelineStageFlags::TESSELLATION_CONTROL_SHADER => 4,
         vk::PipelineStageFlags::TESSELLATION_EVALUATION_SHADER => 5,
         vk::PipelineStageFlags::GEOMETRY_SHADER => 6,
-        vk::PipelineStageFlags::FRAGMENT_SHADER => 7,
-        vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS => 8,
+        vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS => 7,
+        vk::PipelineStageFlags::FRAGMENT_SHADER => 8,
         vk::PipelineStageFlags::LATE_FRAGMENT_TESTS => 9,
         vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT => 10,
         vk::PipelineStageFlags::TRANSFER => 11,

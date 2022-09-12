@@ -1,15 +1,17 @@
 use std::{collections::HashMap, ffi::CString};
 
+use super::fast_int_hasher::FIHashMap;
 use api::descriptor_set::DescriptorSetLayoutCreateInfo;
 use ash::vk::{self, Handle};
+use fxhash::FxHashMap;
 
 /// Default number of sets per pool.
 const SETS_PER_POOL: usize = 16;
 
 #[derive(Default)]
 pub(crate) struct DescriptorPools {
-    pools: HashMap<DescriptorSetLayoutCreateInfo, DescriptorPool>,
-    layout_to_create_info: HashMap<vk::DescriptorSetLayout, DescriptorSetLayoutCreateInfo>,
+    pools: FxHashMap<DescriptorSetLayoutCreateInfo, DescriptorPool>,
+    layout_to_create_info: FIHashMap<vk::DescriptorSetLayout, DescriptorSetLayoutCreateInfo>,
 }
 
 pub(crate) struct DescriptorPool {

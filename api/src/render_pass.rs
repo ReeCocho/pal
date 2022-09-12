@@ -85,6 +85,22 @@ impl<'a, B: Backend> RenderPass<'a, B> {
     }
 
     #[inline]
+    pub fn draw(
+        &mut self,
+        vertex_count: usize,
+        instance_count: usize,
+        first_vertex: usize,
+        first_instance: usize,
+    ) {
+        self.commands.push(Command::Draw {
+            vertex_count,
+            instance_count,
+            first_vertex,
+            first_instance,
+        });
+    }
+
+    #[inline]
     pub fn draw_indexed(
         &mut self,
         index_count: usize,
@@ -99,6 +115,24 @@ impl<'a, B: Backend> RenderPass<'a, B> {
             first_index,
             vertex_offset,
             first_instance,
+        });
+    }
+
+    #[inline]
+    pub fn draw_indexed_indirect(
+        &mut self,
+        buffer: &'a Buffer<B>,
+        array_element: usize,
+        offset: u64,
+        draw_count: usize,
+        stride: u64,
+    ) {
+        self.commands.push(Command::DrawIndexedIndirect {
+            buffer,
+            array_element,
+            offset,
+            draw_count,
+            stride,
         });
     }
 }

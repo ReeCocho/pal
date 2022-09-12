@@ -28,7 +28,7 @@ use graphics_pipeline::GraphicsPipeline;
 use job::Job;
 use queue::VkQueue;
 use raw_window_handle::HasRawWindowHandle;
-use render_pass::{FramebufferCache, RenderPassCache};
+use render_pass::{DrawIndexedIndirect, FramebufferCache, RenderPassCache};
 use shader::Shader;
 use std::{
     borrow::Cow,
@@ -51,7 +51,6 @@ use util::{
 };
 
 pub mod buffer;
-pub mod command_buffer;
 pub mod compute_pipeline;
 pub mod descriptor_set;
 pub mod graphics_pipeline;
@@ -140,6 +139,7 @@ impl Backend for VulkanBackend {
     type DescriptorSetLayout = DescriptorSetLayout;
     type DescriptorSet = DescriptorSet;
     type Job = Job;
+    type DrawIndexedIndirect = DrawIndexedIndirect;
 
     #[inline(always)]
     unsafe fn create_surface<'a, W: HasRawWindowHandle>(
@@ -452,8 +452,7 @@ impl Backend for VulkanBackend {
                     for bind in binds {
                         let buffer = bind.buffer.internal();
                         buffers.push(buffer.buffer);
-                        offsets
-                            .push((buffer.aligned_size * bind.array_element as u64) + bind.offset);
+                        offsets.push(buffer.offset(bind.array_element) + bind.offset);
                     }
                     self.device
                         .cmd_bind_vertex_buffers(cb, *first as u32, &buffers, &offsets);
@@ -468,8 +467,22 @@ impl Backend for VulkanBackend {
                     self.device.cmd_bind_index_buffer(
                         cb,
                         buffer.buffer,
-                        (buffer.aligned_size * *array_element as u64) + offset,
+                        buffer.offset(*array_element) + offset,
                         crate::util::to_vk_index_type(*ty),
+                    );
+                }
+                Command::Draw {
+                    vertex_count,
+                    instance_count,
+                    first_vertex,
+                    first_instance,
+                } => {
+                    self.device.cmd_draw(
+                        cb,
+                        *vertex_count as u32,
+                        *instance_count as u32,
+                        *first_vertex as u32,
+                        *first_instance as u32,
                     );
                 }
                 Command::DrawIndexed {
@@ -488,18 +501,27 @@ impl Backend for VulkanBackend {
                         *first_instance as u32,
                     );
                 }
+                Command::DrawIndexedIndirect {
+                    buffer,
+                    array_element,
+                    offset,
+                    draw_count,
+                    stride,
+                } => {
+                    self.device.cmd_draw_indexed_indirect(
+                        cb,
+                        buffer.internal().buffer,
+                        buffer.internal().offset(*array_element) + *offset,
+                        *draw_count as u32,
+                        *stride as u32,
+                    );
+                }
                 Command::CopyBufferToBuffer(copy) => {
                     let src = copy.src.internal();
                     let dst = copy.dst.internal();
-
-                    // Perform copy
                     let region = [vk::BufferCopy::builder()
-                        .dst_offset(
-                            (dst.aligned_size * copy.dst_array_element as u64) + copy.dst_offset,
-                        )
-                        .src_offset(
-                            (src.aligned_size * copy.src_array_element as u64) + copy.src_offset,
-                        )
+                        .dst_offset(dst.offset(copy.dst_array_element) + copy.dst_offset)
+                        .src_offset(src.offset(copy.src_array_element) + copy.src_offset)
                         .size(copy.len)
                         .build()];
                     self.device
@@ -751,8 +773,7 @@ impl Backend for VulkanBackend {
         layout: &Self::DescriptorSetLayout,
         updates: &[DescriptorSetUpdate<Self>],
     ) {
-        let mut samplers = self.samplers.lock().unwrap();
-        set.update(&self.device, layout, &mut samplers, updates);
+        set.update(self, layout, updates);
     }
 }
 

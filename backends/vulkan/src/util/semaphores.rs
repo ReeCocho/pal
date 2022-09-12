@@ -2,10 +2,12 @@ use std::collections::HashMap;
 
 use ash::vk;
 
+use super::fast_int_hasher::FIHashMap;
+
 #[derive(Default)]
 pub(crate) struct SemaphoreTracker {
-    wait_semaphores: HashMap<vk::Semaphore, WaitInfo>,
-    signal_semaphores: HashMap<vk::Semaphore, Option<u64>>,
+    wait_semaphores: FIHashMap<vk::Semaphore, WaitInfo>,
+    signal_semaphores: FIHashMap<vk::Semaphore, Option<u64>>,
 }
 
 pub(crate) struct OutSemaphores {

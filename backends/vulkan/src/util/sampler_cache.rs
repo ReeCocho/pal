@@ -3,11 +3,11 @@ use api::{
     types::{AnisotropyLevel, Filter},
 };
 use ash::vk;
-use std::collections::HashMap;
+use fxhash::FxHashMap;
 
 #[derive(Default)]
 pub(crate) struct SamplerCache {
-    samplers: HashMap<Sampler, vk::Sampler>,
+    samplers: FxHashMap<Sampler, vk::Sampler>,
 }
 
 impl SamplerCache {
