@@ -5,6 +5,7 @@ use crate::{
     descriptor_set::DescriptorSet,
     graphics_pipeline::GraphicsPipeline,
     render_pass::{RenderPass, RenderPassDescriptor, VertexBind},
+    texture::Texture,
     types::{IndexType, ShaderStage},
     Backend,
 };
@@ -17,6 +18,18 @@ pub struct CopyBufferToBuffer<'a, B: Backend> {
     pub dst_array_element: usize,
     pub dst_offset: u64,
     pub len: u64,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BufferTextureCopy {
+    pub buffer_offset: u64,
+    pub buffer_row_length: u32,
+    pub buffer_image_height: u32,
+    pub buffer_array_element: usize,
+    pub image_offset: (u32, u32, u32),
+    pub image_extent: (u32, u32, u32),
+    pub image_mip_level: usize,
+    pub image_array_element: usize,
 }
 
 pub enum Command<'a, B: Backend> {
@@ -63,6 +76,16 @@ pub enum Command<'a, B: Backend> {
         stride: u64,
     },
     CopyBufferToBuffer(CopyBufferToBuffer<'a, B>),
+    CopyBufferToTexture {
+        buffer: &'a Buffer<B>,
+        texture: &'a Texture<B>,
+        copy: BufferTextureCopy,
+    },
+    CopyTextureToBuffer {
+        buffer: &'a Buffer<B>,
+        texture: &'a Texture<B>,
+        copy: BufferTextureCopy,
+    },
 }
 
 pub struct CommandBuffer<'a, B: Backend> {
@@ -97,5 +120,33 @@ impl<'a, B: Backend> CommandBuffer<'a, B> {
     #[inline(always)]
     pub fn copy_buffer_to_buffer(&mut self, copy: CopyBufferToBuffer<'a, B>) {
         self.commands.push(Command::CopyBufferToBuffer(copy));
+    }
+
+    #[inline(always)]
+    pub fn copy_buffer_to_texture(
+        &mut self,
+        buffer: &'a Buffer<B>,
+        texture: &'a Texture<B>,
+        copy: BufferTextureCopy,
+    ) {
+        self.commands.push(Command::CopyBufferToTexture {
+            buffer,
+            texture,
+            copy,
+        });
+    }
+
+    #[inline(always)]
+    pub fn copy_texture_to_buffer(
+        &mut self,
+        buffer: &'a Buffer<B>,
+        texture: &'a Texture<B>,
+        copy: BufferTextureCopy,
+    ) {
+        self.commands.push(Command::CopyTextureToBuffer {
+            buffer,
+            texture,
+            copy,
+        });
     }
 }

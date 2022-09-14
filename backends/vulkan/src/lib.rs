@@ -527,6 +527,78 @@ impl Backend for VulkanBackend {
                     self.device
                         .cmd_copy_buffer(cb, src.buffer, dst.buffer, &region);
                 }
+                Command::CopyBufferToTexture {
+                    buffer,
+                    texture,
+                    copy,
+                } => {
+                    let src = buffer.internal();
+                    let dst = texture.internal();
+                    let copy = [vk::BufferImageCopy::builder()
+                        .buffer_offset(src.offset(copy.buffer_array_element) + copy.buffer_offset)
+                        .buffer_row_length(copy.buffer_row_length)
+                        .buffer_image_height(copy.buffer_image_height)
+                        .image_subresource(vk::ImageSubresourceLayers {
+                            aspect_mask: dst.aspect_flags,
+                            mip_level: copy.image_mip_level as u32,
+                            base_array_layer: copy.image_array_element as u32,
+                            layer_count: 1,
+                        })
+                        .image_offset(vk::Offset3D {
+                            x: copy.image_offset.0 as i32,
+                            y: copy.image_offset.1 as i32,
+                            z: copy.image_offset.2 as i32,
+                        })
+                        .image_extent(vk::Extent3D {
+                            width: copy.image_extent.0,
+                            height: copy.image_extent.1,
+                            depth: copy.image_extent.2,
+                        })
+                        .build()];
+                    self.device.cmd_copy_buffer_to_image(
+                        cb,
+                        src.buffer,
+                        dst.image,
+                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                        &copy,
+                    );
+                }
+                Command::CopyTextureToBuffer {
+                    buffer,
+                    texture,
+                    copy,
+                } => {
+                    let src = texture.internal();
+                    let dst = buffer.internal();
+                    let copy = [vk::BufferImageCopy::builder()
+                        .buffer_offset(dst.offset(copy.buffer_array_element) + copy.buffer_offset)
+                        .buffer_row_length(copy.buffer_row_length)
+                        .buffer_image_height(copy.buffer_image_height)
+                        .image_subresource(vk::ImageSubresourceLayers {
+                            aspect_mask: src.aspect_flags,
+                            mip_level: copy.image_mip_level as u32,
+                            base_array_layer: copy.image_array_element as u32,
+                            layer_count: 1,
+                        })
+                        .image_offset(vk::Offset3D {
+                            x: copy.image_offset.0 as i32,
+                            y: copy.image_offset.1 as i32,
+                            z: copy.image_offset.2 as i32,
+                        })
+                        .image_extent(vk::Extent3D {
+                            width: copy.image_extent.0,
+                            height: copy.image_extent.1,
+                            depth: copy.image_extent.2,
+                        })
+                        .build()];
+                    self.device.cmd_copy_image_to_buffer(
+                        cb,
+                        src.image,
+                        vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                        dst.buffer,
+                        &copy,
+                    );
+                }
             }
         }
 

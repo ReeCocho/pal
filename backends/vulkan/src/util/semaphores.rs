@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use ash::vk;
 
 use super::fast_int_hasher::FIHashMap;

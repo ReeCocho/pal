@@ -14,9 +14,7 @@ use crate::{
     buffer::BufferRefCounter,
     job::Job,
     texture::TextureRefCounter,
-    util::{
-        descriptor_pool::DescriptorPools, garbage_collector::Garbage, sampler_cache::SamplerCache,
-    },
+    util::{descriptor_pool::DescriptorPools, garbage_collector::Garbage},
     VulkanBackend,
 };
 

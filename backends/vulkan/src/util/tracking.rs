@@ -1,7 +1,9 @@
 use api::{
-    command_buffer::{Command, CopyBufferToBuffer},
+    buffer::Buffer,
+    command_buffer::{BufferTextureCopy, Command, CopyBufferToBuffer},
     descriptor_set::DescriptorSet,
     render_pass::{ColorAttachmentSource, RenderPassDescriptor},
+    texture::Texture,
 };
 
 use super::{
@@ -33,6 +35,16 @@ pub(crate) unsafe fn track_resources(mut state: TrackState) {
         Command::CopyBufferToBuffer(copy_info) => {
             track_buffer_to_buffer_copy(&mut state, copy_info)
         }
+        Command::CopyBufferToTexture {
+            buffer,
+            texture,
+            copy,
+        } => track_buffer_to_texture_copy(&mut state, buffer, texture, copy),
+        Command::CopyTextureToBuffer {
+            buffer,
+            texture,
+            copy,
+        } => track_texture_to_buffer_copy(&mut state, buffer, texture, copy),
         // All other commands do not need state tracking
         _ => {}
     }
@@ -257,6 +269,86 @@ unsafe fn track_buffer_to_buffer_copy(
             access: vk::AccessFlags::TRANSFER_WRITE,
             stage: vk::PipelineStageFlags::TRANSFER,
             layout: vk::ImageLayout::UNDEFINED,
+        },
+    );
+
+    if let Some(barrier) = state.pipeline_tracker.submit(scope) {
+        barrier.execute(state.device, state.command_buffer);
+    }
+}
+
+unsafe fn track_buffer_to_texture_copy(
+    state: &mut TrackState,
+    buffer: &Buffer<crate::VulkanBackend>,
+    texture: &Texture<crate::VulkanBackend>,
+    copy: &BufferTextureCopy,
+) {
+    // Barrier check
+    let buffer = buffer.internal();
+    let texture = texture.internal();
+    let mut scope = UsageScope::default();
+    scope.use_resource(
+        SubResource::Buffer {
+            buffer: buffer.buffer,
+            array_elem: copy.buffer_array_element as u32,
+        },
+        SubResourceUsage {
+            access: vk::AccessFlags::TRANSFER_READ,
+            stage: vk::PipelineStageFlags::TRANSFER,
+            layout: vk::ImageLayout::UNDEFINED,
+        },
+    );
+    scope.use_resource(
+        SubResource::Texture {
+            texture: texture.image,
+            aspect_mask: texture.aspect_flags,
+            array_elem: copy.image_array_element as u32,
+            mip_level: copy.image_mip_level as u32,
+        },
+        SubResourceUsage {
+            access: vk::AccessFlags::TRANSFER_WRITE,
+            stage: vk::PipelineStageFlags::TRANSFER,
+            layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        },
+    );
+
+    if let Some(barrier) = state.pipeline_tracker.submit(scope) {
+        barrier.execute(state.device, state.command_buffer);
+    }
+}
+
+unsafe fn track_texture_to_buffer_copy(
+    state: &mut TrackState,
+    buffer: &Buffer<crate::VulkanBackend>,
+    texture: &Texture<crate::VulkanBackend>,
+    copy: &BufferTextureCopy,
+) {
+    // Barrier check
+    let buffer = buffer.internal();
+    let texture = texture.internal();
+    let mut scope = UsageScope::default();
+    scope.use_resource(
+        SubResource::Buffer {
+            buffer: buffer.buffer,
+            array_elem: copy.buffer_array_element as u32,
+        },
+        SubResourceUsage {
+            access: vk::AccessFlags::TRANSFER_WRITE,
+            stage: vk::PipelineStageFlags::TRANSFER,
+            layout: vk::ImageLayout::UNDEFINED,
+        },
+    );
+    scope.use_resource(
+        SubResource::Texture {
+            texture: texture.image,
+            aspect_mask: texture.aspect_flags,
+            array_elem: copy.image_array_element as u32,
+            mip_level: copy.image_mip_level as u32,
+        },
+        SubResourceUsage {
+            access: vk::AccessFlags::TRANSFER_READ,
+            stage: vk::PipelineStageFlags::TRANSFER,
+            layout: vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
         },
     );
 
