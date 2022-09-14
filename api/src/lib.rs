@@ -1,3 +1,9 @@
+//! Pal is a graphics and compute library inspired by [Vulkan](https://www.vulkan.org/) and
+//! [wgpu](https://github.com/gfx-rs/wgpu).
+//!
+//! To start using Pal, you must first choose a [`Backend`] and then create a
+//! [`Context`](struct@context::Context).
+
 pub mod buffer;
 pub mod command_buffer;
 pub mod compute_pass;
@@ -32,6 +38,10 @@ use surface::{
 use texture::{TextureCreateError, TextureCreateInfo};
 use types::{JobStatus, QueueType};
 
+/// TODO:
+/// - Describe [normative terminology](https://www.ietf.org/rfc/rfc2119.txt).
+/// - Explain backend requirements.
+/// - Explain user requirements.
 pub trait Backend: Sized + 'static {
     type Buffer;
     type Texture;

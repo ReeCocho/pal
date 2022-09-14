@@ -302,8 +302,8 @@ unsafe fn track_buffer_to_texture_copy(
         SubResource::Texture {
             texture: texture.image,
             aspect_mask: texture.aspect_flags,
-            array_elem: copy.image_array_element as u32,
-            mip_level: copy.image_mip_level as u32,
+            array_elem: copy.texture_array_element as u32,
+            mip_level: copy.texture_mip_level as u32,
         },
         SubResourceUsage {
             access: vk::AccessFlags::TRANSFER_WRITE,
@@ -342,8 +342,8 @@ unsafe fn track_texture_to_buffer_copy(
         SubResource::Texture {
             texture: texture.image,
             aspect_mask: texture.aspect_flags,
-            array_elem: copy.image_array_element as u32,
-            mip_level: copy.image_mip_level as u32,
+            array_elem: copy.texture_array_element as u32,
+            mip_level: copy.texture_mip_level as u32,
         },
         SubResourceUsage {
             access: vk::AccessFlags::TRANSFER_READ,

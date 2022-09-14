@@ -6,17 +6,24 @@ use crate::{
     graphics_pipeline::GraphicsPipeline,
     render_pass::{RenderPass, RenderPassDescriptor, VertexBind},
     texture::Texture,
-    types::{IndexType, ShaderStage},
+    types::{IndexType, QueueType, ShaderStage},
     Backend,
 };
 
 pub struct CopyBufferToBuffer<'a, B: Backend> {
+    /// The source buffer to read from.
     pub src: &'a Buffer<B>,
+    /// The source array element to read from.
     pub src_array_element: usize,
+    /// The offset within the array element of the source buffer to read from.
     pub src_offset: u64,
+    /// The destination buffer to write to.
     pub dst: &'a Buffer<B>,
+    /// The destination array element to write to.
     pub dst_array_element: usize,
+    /// The offset within the array element of the destination buffer to write to.
     pub dst_offset: u64,
+    /// The number of bytes to copy.
     pub len: u64,
 }
 
@@ -25,11 +32,16 @@ pub struct BufferTextureCopy {
     pub buffer_offset: u64,
     pub buffer_row_length: u32,
     pub buffer_image_height: u32,
+    /// The array element of the buffer to read/write.
     pub buffer_array_element: usize,
-    pub image_offset: (u32, u32, u32),
-    pub image_extent: (u32, u32, u32),
-    pub image_mip_level: usize,
-    pub image_array_element: usize,
+    /// The width, height, and depth offsets within the texture to read/write.
+    pub texture_offset: (u32, u32, u32),
+    /// The width, height, and depth sizes within the texture to read/write.
+    pub texture_extent: (u32, u32, u32),
+    /// The mip level of the texture to read/write.
+    pub texture_mip_level: usize,
+    /// The array element of the texture to read/write.
+    pub texture_array_element: usize,
 }
 
 pub enum Command<'a, B: Backend> {
@@ -88,16 +100,35 @@ pub enum Command<'a, B: Backend> {
     },
 }
 
+/// A command buffer is used to record commands which are the submitted to a queue.
 pub struct CommandBuffer<'a, B: Backend> {
+    pub(crate) queue_ty: QueueType,
     pub(crate) commands: Vec<Command<'a, B>>,
 }
 
 impl<'a, B: Backend> CommandBuffer<'a, B> {
+    /// Begins a render pass scope.
+    ///
+    /// # Arguments
+    /// - `descriptor` - A description of the render pass.
+    /// - `pass` - A function that records render pass commands.
+    ///
+    /// # Panics
+    /// - If the queue type this command buffer was created with does not support graphics
+    /// commands.
+    ///
     pub fn render_pass(
         &mut self,
         descriptor: RenderPassDescriptor<'a, B>,
         pass: impl FnOnce(&mut RenderPass<'a, B>),
     ) {
+        assert_eq!(
+            self.queue_ty,
+            QueueType::Main,
+            "queue `{:?}` does not support render passes",
+            self.queue_ty
+        );
+
         self.commands.push(Command::BeginRenderPass(descriptor));
         let mut render_pass = RenderPass {
             commands: Vec::default(),
@@ -107,7 +138,20 @@ impl<'a, B: Backend> CommandBuffer<'a, B> {
         self.commands.push(Command::EndRenderPass);
     }
 
+    /// Begins a compute pass scope.
+    ///
+    /// # Arguments
+    /// - `pass` - A function that records compute commands.
+    ///
+    /// # Panics
+    /// - If the queue type this command buffer was created with does not support compute commands.
     pub fn compute_pass(&mut self, pass: impl FnOnce(&mut ComputePass<'a, B>)) {
+        assert!(
+            self.queue_ty == QueueType::Main || self.queue_ty == QueueType::Compute,
+            "queue `{:?}` does not support compute passes",
+            self.queue_ty
+        );
+
         self.commands.push(Command::BeginComputePass);
         let mut compute_pass = ComputePass {
             commands: Vec::default(),
@@ -117,18 +161,48 @@ impl<'a, B: Backend> CommandBuffer<'a, B> {
         self.commands.push(Command::EndComputePass);
     }
 
+    /// Copies data from one buffer into another.
+    ///
+    /// # Arguments
+    /// - `copy` - A description of the copy to perform.
+    ///
+    /// # Panics
+    /// - If the queue type this command buffer was created with does not support transfer
+    /// commands.
     #[inline(always)]
     pub fn copy_buffer_to_buffer(&mut self, copy: CopyBufferToBuffer<'a, B>) {
+        assert!(
+            self.queue_ty == QueueType::Main || self.queue_ty == QueueType::Transfer,
+            "queue `{:?}` does not support transfer commands",
+            self.queue_ty
+        );
+
         self.commands.push(Command::CopyBufferToBuffer(copy));
     }
 
+    /// Copies data from a buffer into a texture.
+    ///
+    /// # Arguments
+    /// - `texture` - The destination texture to write to.
+    /// - `buffer` - The source buffer to copy from.
+    /// - `copy` - A description of the copy to perform.
+    ///
+    /// # Panics
+    /// - If the queue type this command buffer was created with does not support transfer
+    /// commands.
     #[inline(always)]
     pub fn copy_buffer_to_texture(
         &mut self,
-        buffer: &'a Buffer<B>,
         texture: &'a Texture<B>,
+        buffer: &'a Buffer<B>,
         copy: BufferTextureCopy,
     ) {
+        assert!(
+            self.queue_ty == QueueType::Main || self.queue_ty == QueueType::Transfer,
+            "queue `{:?}` does not support transfer commands",
+            self.queue_ty
+        );
+
         self.commands.push(Command::CopyBufferToTexture {
             buffer,
             texture,
@@ -136,6 +210,16 @@ impl<'a, B: Backend> CommandBuffer<'a, B> {
         });
     }
 
+    /// Copies data from a texture into a buffer.
+    ///
+    /// # Arguments
+    /// - `buffer` - The destination buffer to write to.
+    /// - `texture` The source texture to read from.
+    /// - `copy` - A description of the copy to perform.
+    ///
+    /// # Panics
+    /// - If the queue type this command buffer was created with does not support transfer
+    /// commands.
     #[inline(always)]
     pub fn copy_texture_to_buffer(
         &mut self,
@@ -143,6 +227,12 @@ impl<'a, B: Backend> CommandBuffer<'a, B> {
         texture: &'a Texture<B>,
         copy: BufferTextureCopy,
     ) {
+        assert!(
+            self.queue_ty == QueueType::Main || self.queue_ty == QueueType::Transfer,
+            "queue `{:?}` does not support transfer commands",
+            self.queue_ty
+        );
+
         self.commands.push(Command::CopyTextureToBuffer {
             buffer,
             texture,

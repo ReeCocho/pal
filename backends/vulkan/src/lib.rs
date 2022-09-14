@@ -540,19 +540,19 @@ impl Backend for VulkanBackend {
                         .buffer_image_height(copy.buffer_image_height)
                         .image_subresource(vk::ImageSubresourceLayers {
                             aspect_mask: dst.aspect_flags,
-                            mip_level: copy.image_mip_level as u32,
-                            base_array_layer: copy.image_array_element as u32,
+                            mip_level: copy.texture_mip_level as u32,
+                            base_array_layer: copy.texture_array_element as u32,
                             layer_count: 1,
                         })
                         .image_offset(vk::Offset3D {
-                            x: copy.image_offset.0 as i32,
-                            y: copy.image_offset.1 as i32,
-                            z: copy.image_offset.2 as i32,
+                            x: copy.texture_offset.0 as i32,
+                            y: copy.texture_offset.1 as i32,
+                            z: copy.texture_offset.2 as i32,
                         })
                         .image_extent(vk::Extent3D {
-                            width: copy.image_extent.0,
-                            height: copy.image_extent.1,
-                            depth: copy.image_extent.2,
+                            width: copy.texture_extent.0,
+                            height: copy.texture_extent.1,
+                            depth: copy.texture_extent.2,
                         })
                         .build()];
                     self.device.cmd_copy_buffer_to_image(
@@ -576,19 +576,19 @@ impl Backend for VulkanBackend {
                         .buffer_image_height(copy.buffer_image_height)
                         .image_subresource(vk::ImageSubresourceLayers {
                             aspect_mask: src.aspect_flags,
-                            mip_level: copy.image_mip_level as u32,
-                            base_array_layer: copy.image_array_element as u32,
+                            mip_level: copy.texture_mip_level as u32,
+                            base_array_layer: copy.texture_array_element as u32,
                             layer_count: 1,
                         })
                         .image_offset(vk::Offset3D {
-                            x: copy.image_offset.0 as i32,
-                            y: copy.image_offset.1 as i32,
-                            z: copy.image_offset.2 as i32,
+                            x: copy.texture_offset.0 as i32,
+                            y: copy.texture_offset.1 as i32,
+                            z: copy.texture_offset.2 as i32,
                         })
                         .image_extent(vk::Extent3D {
-                            width: copy.image_extent.0,
-                            height: copy.image_extent.1,
-                            depth: copy.image_extent.2,
+                            width: copy.texture_extent.0,
+                            height: copy.texture_extent.1,
+                            depth: copy.texture_extent.2,
                         })
                         .build()];
                     self.device.cmd_copy_image_to_buffer(

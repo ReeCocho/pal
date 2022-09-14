@@ -4,10 +4,16 @@ use crate::{context::Context, types::*, Backend};
 use thiserror::Error;
 
 pub struct BufferCreateInfo {
+    /// The size in bytes of the buffer to create.
     pub size: u64,
+    /// How many array elements this buffer supports. Each array element is of the same size as
+    /// `size`.
     pub array_elements: usize,
+    /// Describes the supported usage types of this buffer.
     pub buffer_usage: BufferUsage,
+    /// Describes what memory operations are supported by this buffer.
     pub memory_usage: MemoryUsage,
+    /// The backend *should* use the provided debug name for easy identification.
     pub debug_name: Option<String>,
 }
 
@@ -25,14 +31,17 @@ pub enum BufferViewError {
     Other(String),
 }
 
+/// A GPU memory buffer. For the purposes of synchronization, this is considered a resource.
 pub struct Buffer<B: Backend> {
     ctx: Context<B>,
     size: u64,
+    memory_usage: MemoryUsage,
+    array_elements: usize,
     pub(crate) id: B::Buffer,
 }
 
 pub struct BufferReadView<'a, B: Backend> {
-    buffer: &'a Buffer<B>,
+    _buffer: &'a Buffer<B>,
     map: NonNull<u8>,
     len: u64,
 }
@@ -46,13 +55,51 @@ pub struct BufferWriteView<'a, B: Backend> {
 }
 
 impl<B: Backend> Buffer<B> {
+    /// Creates a new buffer.
+    ///
+    /// # Arguments
+    /// - `ctx` - The [`Context`] to create the buffer with.
+    /// - `create_info` - Describes the buffer to create.
+    ///
+    /// # Panics
+    /// - If `create_info.size` is `0`.
+    /// - If `create_info.array_elements` is `0`.
     #[inline(always)]
     pub fn new(ctx: Context<B>, create_info: BufferCreateInfo) -> Result<Self, BufferCreateError> {
+        assert_ne!(create_info.size, 0, "buffer size cannot be zero");
+        assert_ne!(
+            create_info.array_elements, 0,
+            "buffer array elements cannot be zero"
+        );
         let size = create_info.size;
+        let memory_usage = create_info.memory_usage;
+        let array_elements = create_info.array_elements;
         let id = unsafe { ctx.0.create_buffer(create_info)? };
-        Ok(Self { ctx, id, size })
+        Ok(Self {
+            ctx,
+            id,
+            size,
+            memory_usage,
+            array_elements,
+        })
     }
 
+    /// Creates a new staging buffer. A staging buffer is typically used to transfer data from the
+    /// CPU to a [`GpuOnly`](MemoryUsage::GpuOnly) buffer.
+    ///
+    /// Staging buffers are not a special kind of buffer. This is simply a helper function to do
+    /// the following:
+    /// 1. Create a buffer that is [`TRANSFER_SRC`](BufferUsage) and
+    /// [`CpuToGpu`](MemoryUsage::CpuToGpu) with a single array element.
+    /// 2. Copy the `data` to the buffer.
+    ///
+    /// # Arguments
+    /// - `ctx` - The [`Context`] to create the buffer with.
+    /// - `debug_name` - The backend *should* use the provided debug name for easy identification.
+    /// - `data` - The data to upload to the buffer.
+    ///
+    /// # Panics
+    /// - If `data.is_empty()`.
     pub fn new_staging(
         ctx: Context<B>,
         debug_name: Option<String>,
@@ -82,20 +129,46 @@ impl<B: Backend> Buffer<B> {
         self.size
     }
 
+    /// Provides a view into the buffer for read only operations.
+    ///
+    /// # Arguments
+    /// - `idx` - The array element of the buffer to view.
+    ///
+    /// # Synchronization
+    /// The backend *must* guarantee that the buffer is not being read or written to by any
+    /// in-flight commands by the time the user has access to the buffer map.
+    ///
+    /// # Panics
+    /// - If the buffer is not mappable. That is, the buffer was created with `memory_usage` equal
+    /// to [`MemoryUsage::CpuToGpu`] or [`MemoryUsage::GpuToCpu`].
+    /// - If `idx` is not a valid array element of the buffer.
     #[inline(always)]
     pub fn read(&mut self, idx: usize) -> Result<BufferReadView<B>, BufferViewError> {
+        assert!(idx < self.array_elements, "`idx` is out of bounds");
+        assert!(
+            self.memory_usage == MemoryUsage::CpuToGpu
+                || self.memory_usage == MemoryUsage::GpuToCpu,
+            "buffer is not mappable"
+        );
+
         let (map, len) = unsafe {
             let res = self.ctx.0.map_memory(&mut self.id, idx)?;
             self.ctx.0.invalidate_range(&mut self.id, idx);
             res
         };
         Ok(BufferReadView {
-            buffer: self,
+            _buffer: self,
             map,
             len,
         })
     }
 
+    /// Provides a view into the buffer for read and write operations.
+    ///
+    /// See [`read`](Buffer::read) for synchronization requirements and panics.
+    ///
+    /// # Arguments
+    /// - `idx` - The array element of the buffer to view.
     #[inline(always)]
     pub fn write(&mut self, idx: usize) -> Result<BufferWriteView<B>, BufferViewError> {
         let (map, len) = unsafe {
