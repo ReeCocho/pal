@@ -55,7 +55,7 @@ impl<B: Backend> Context<B> {
         Queue::new(self.clone(), QueueType::Compute)
     }
 
-    /// Gets a reference to the presentation queue. The main queue can only be used to submit
+    /// Gets a reference to the presentation queue. The present queue can only be used to submit
     /// surface images for presentation using the [`present`](Queue::present) function.
     #[inline(always)]
     pub fn present(&self) -> Queue<B> {

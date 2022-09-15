@@ -4,7 +4,9 @@ use crate::{context::Context, Backend};
 use thiserror::Error;
 
 pub struct ShaderCreateInfo<'a> {
+    /// Shader code for the module. The format depends on which backend is being used.
     pub code: &'a [u8],
+    /// The backend *should* use the provided debug name for easy identification.
     pub debug_name: Option<String>,
 }
 
@@ -22,6 +24,11 @@ pub(crate) struct ShaderInner<B: Backend> {
 }
 
 impl<B: Backend> Shader<B> {
+    /// Creates a new shader.
+    ///
+    /// # Arguments
+    /// - `ctx` - The [`Context`] to create the buffer with.
+    /// - `create_info` - Describes the shader to create.
     #[inline(always)]
     pub fn new(
         ctx: Context<B>,

@@ -29,8 +29,13 @@ pub struct CopyBufferToBuffer<'a, B: Backend> {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BufferTextureCopy {
+    /// Offset from the start of the buffer array element to begin read/write.
     pub buffer_offset: u64,
+    /// In combination with `buffer_image_height`, this defines (in texels) as subregion of a
+    /// larger texture in buffer memory, controling addressing calcualtions. If either value is
+    /// zero, the buffer memory is considered tightly packed.
     pub buffer_row_length: u32,
+    /// See `buffer_row_length`.
     pub buffer_image_height: u32,
     /// The array element of the buffer to read/write.
     pub buffer_array_element: usize,
@@ -131,6 +136,7 @@ impl<'a, B: Backend> CommandBuffer<'a, B> {
 
         self.commands.push(Command::BeginRenderPass(descriptor));
         let mut render_pass = RenderPass {
+            bound_pipeline: false,
             commands: Vec::default(),
         };
         pass(&mut render_pass);
@@ -155,6 +161,7 @@ impl<'a, B: Backend> CommandBuffer<'a, B> {
         self.commands.push(Command::BeginComputePass);
         let mut compute_pass = ComputePass {
             commands: Vec::default(),
+            bound_pipeline: false,
         };
         pass(&mut compute_pass);
         self.commands.extend(compute_pass.commands);

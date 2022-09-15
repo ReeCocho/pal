@@ -25,8 +25,6 @@ pub enum BufferCreateError {
 
 #[derive(Debug, Error)]
 pub enum BufferViewError {
-    #[error("this buffer is not mappable")]
-    NotMapable,
     #[error("an error has occured: {0}")]
     Other(String),
 }

@@ -14,13 +14,18 @@ pub struct SurfaceCreateInfo<'a, W: HasRawWindowHandle> {
     pub config: SurfaceConfiguration,
     /// Raw window handle used by whatever windowing API you choose.
     pub window: &'a W,
+    /// The backend *should* use the provided debug name for easy identification.
     pub debug_name: Option<String>,
 }
 
 pub struct SurfaceConfiguration {
+    /// Width in pixels of the surface.
     pub width: u32,
+    /// Height in pixels of the surface.
     pub height: u32,
+    /// Preferred presentation mode of the surface.
     pub present_mode: PresentMode,
+    /// Preferred texture format of the surface.
     pub format: TextureFormat,
 }
 

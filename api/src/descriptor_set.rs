@@ -10,27 +10,37 @@ use crate::{
 };
 
 pub struct DescriptorSetCreateInfo<B: Backend> {
+    /// The layout to create the set with.
     pub layout: DescriptorSetLayout<B>,
+    /// The backend *should* use the provided debug name for easy identification.
     pub debug_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DescriptorSetLayoutCreateInfo {
+    /// The bindings of this set.
     pub bindings: Vec<DescriptorBinding>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DescriptorBinding {
+    /// The index of the binding within the set.
     pub binding: u32,
+    /// Type of object held within this binding.
     pub ty: DescriptorType,
+    /// The number of array elements for this binding.
     pub count: usize,
+    /// The shader stages that have access to this binding.
     pub stage: ShaderStage,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum DescriptorType {
+    /// A read-only sampled texture.
     Texture,
+    /// A read-only uniform buffer object.
     UniformBuffer,
+    /// A read-only or read-write storage buffer object.
     StorageBuffer(AccessType),
 }
 
@@ -55,25 +65,37 @@ pub struct DescriptorSet<B: Backend> {
 }
 
 pub struct DescriptorSetUpdate<'a, B: Backend> {
+    /// The binding to update within the set.
     pub binding: u32,
+    /// The array element within the binding to update.
     pub array_element: usize,
+    /// The value to update the binding with.
     pub value: DescriptorValue<'a, B>,
 }
 
 pub enum DescriptorValue<'a, B: Backend> {
     UniformBuffer {
+        /// The uniform buffer to bind.
         buffer: &'a Buffer<B>,
+        /// The array element of the uniform buffer to bind.
         array_element: usize,
     },
     StorageBuffer {
+        /// The storage buffer to bind.
         buffer: &'a Buffer<B>,
+        /// The array element of the storage buffer to bind.
         array_element: usize,
     },
     Texture {
+        /// The texture to bind.
         texture: &'a Texture<B>,
+        /// The array element of the texture to bind.
         array_element: usize,
+        /// How the texture should be sampled.
         sampler: Sampler,
+        /// The base mip to bind.
         base_mip: usize,
+        /// The number of mip levels to bind.
         mip_count: usize,
     },
 }
@@ -84,6 +106,11 @@ pub(crate) struct DescriptorSetLayoutInner<B: Backend> {
 }
 
 impl<B: Backend> DescriptorSet<B> {
+    /// Creates a new descriptor set.
+    ///
+    /// # Arguments
+    /// - `ctx` - The [`Context`] to create the buffer with.
+    /// - `create_info` - Describes the descriptor set to create.
     #[inline(always)]
     pub fn new(
         ctx: Context<B>,
@@ -104,6 +131,17 @@ impl<B: Backend> DescriptorSet<B> {
         &self.layout
     }
 
+    /// Updates the descriptor set with new values.
+    ///
+    /// # Arguments
+    /// - `updates` - The updates to perform on the set.
+    ///
+    /// # Panics
+    /// TODO
+    ///
+    /// # Synchronization
+    /// The backend *must* ensure that the descriptor set is not being accessed by any queue at the
+    /// time of the update.
     pub fn update(&mut self, updates: &[DescriptorSetUpdate<B>]) {
         unsafe {
             self.ctx
