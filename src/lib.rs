@@ -1,6 +1,11 @@
 #[cfg(feature = "vulkan")]
 type Backend = vulkan::VulkanBackend;
 
+#[cfg(feature = "vulkan")]
+pub mod backend {
+    pub use vulkan::{VulkanBackend, VulkanBackendCreateInfo, VulkanBackendCreateError};
+}
+
 pub mod prelude {
     pub use api::types::*;
 
